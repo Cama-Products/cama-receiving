@@ -372,7 +372,7 @@
   th[aria-sort="ascending"]::after { content: ' ▲'; opacity: 1; color: var(--navy); }
   th[aria-sort="descending"]::after { content: ' ▼'; opacity: 1; color: var(--navy); }
   .inv-card.sorted tr.po-head { display: none; }
-  .scan-panel { margin: 0 0 16px; padding: 14px 16px; background: #fff; border: 1px solid var(--border); border-radius: 10px; }
+  .scan-panel { position: sticky; top: -24px; z-index: 30; margin: 0 0 16px; padding: 12px 16px; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 14px -8px rgba(20,30,60,0.35); }
   .scan-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
   .scan-row label { font-weight: 700; color: var(--navy); }
   .scan-row input { flex: 1 1 360px; padding: 12px 14px; font-size: 18px; border: 2px solid var(--navy); border-radius: 8px; }
@@ -382,6 +382,17 @@
   .scan-msg.ok { color: var(--ok); font-weight: 600; }
   .scan-msg.warn { color: var(--warn); font-weight: 600; }
   .scan-msg .bad { color: var(--err); }
+  .scan-found { margin-top: 10px; padding: 10px 14px; border: 1px solid var(--border); border-left: 6px solid var(--ok); border-radius: 8px; background: #FBFDFB; }
+  .scan-found.not_on_po { border-left-color: var(--err); background: var(--err-tint); }
+  .scan-found.over { border-left-color: var(--warn); background: var(--warn-tint); }
+  .scan-found .scan-code { font-size: 20px; font-weight: 800; color: var(--navy); }
+  .scan-found .scan-alt { margin-left: 8px; font-size: 13px; color: var(--slate-dim); font-weight: 600; }
+  .scan-found .scan-desc { margin-left: 12px; font-size: 15px; }
+  .scan-found .scan-meta { margin-left: 12px; font-size: 13px; color: var(--slate); }
+  .scan-found .scan-steps { margin-top: 6px; font-size: 13px; color: var(--slate); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .scan-found .scan-steps .btn { padding: 4px 10px; font-size: 12px; }
+  .scan-found .scan-saved { margin-top: 4px; font-size: 14px; color: var(--ok); }
+  td.count.scan-focus input { outline: 3px solid var(--ok); outline-offset: 1px; box-shadow: 0 0 0 5px rgba(31,122,69,0.18); }
   .scan-card { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 24px; margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-left: 6px solid var(--ok); border-radius: 8px; background: #FBFDFB; }
   .scan-card.not_on_po { border-left-color: var(--err); background: var(--err-tint); }
   .scan-card.over { border-left-color: var(--warn); background: var(--warn-tint); }
@@ -393,11 +404,12 @@
   .scan-entry label { font-weight: 700; }
   .scan-entry input { width: 120px; padding: 10px 12px; font-size: 22px; font-weight: 800; text-align: right; border: 2px solid var(--navy); border-radius: 8px; }
   .scan-entry input.failed { border-color: var(--err); }
-  .scan-list { display: grid; gap: 6px; margin-top: 8px; }
-  .scan-pick { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; font: inherit; }
+  .scan-list { display: grid; gap: 5px; margin-top: 8px; max-height: 160px; overflow-y: auto; }   /* the box stays at the top of the screen, so a long list scrolls inside it */
+  .scan-pick { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; text-align: left; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; font: inherit; }
   .scan-pick:hover, .scan-pick:focus { border-color: var(--navy); outline: none; background: #F4F7FB; }
   .scan-pick span { color: var(--slate-dim); font-size: 13px; }
-  tr.scan-hit td { background: rgba(31,122,69,0.16) !important; transition: background .3s; }
+  tr.scan-hit td { background: rgba(31,122,69,0.22) !important; box-shadow: inset 0 2px 0 var(--ok), inset 0 -2px 0 var(--ok); }
+  tr.scan-cand td { background: rgba(31,122,69,0.10) !important; }
   @media print { .scan-panel { display: none; } }
   .confirm-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin: 18px 0 8px; padding: 16px 18px; background: #fff; border: 1px solid var(--border); border-radius: 10px; }
   .confirm-box .muted { font-size: 13px; margin-top: 2px; }
@@ -413,6 +425,7 @@
   @media (max-width: 860px) {
     .sidebar { display: none; }
     .content { padding: 16px; }
+    .scan-panel { top: -16px; }
     .topbar { padding: 10px 16px; }
     .hide-sm { display: none; }
     .mobile-nav { display: flex !important; }
@@ -1458,6 +1471,7 @@
           desc: (first && first.desc) || ln.desc, inv_desc: ln.desc, gtin: first ? first.gtin || '' : '',
           inv_qty: ln.qty || 0, po_qty: alloc.reduce((s, a) => s + a[1], 0),
           pos: alloc.map(([i, t]) => [poLines[i].po, t]),
+          due: alloc.map(([i]) => poLines[i].due_date).filter(Boolean).sort()[0] || '',   // the oldest due date in MYOB of the PO lines this line is on
           po_price: first ? first.price : null, inv_price: ln.price, price_var,
           currency: inv.currency || '', invoice_no: inv.invoice_no || '', supplier: inv.supplier || '',
           status, superseded: via === 'old', prefix_matched: via === 'prefix', flags, line_no: li + 1,
@@ -1484,6 +1498,7 @@
       superseded: rows.filter(r => r.superseded).length,
       prefix_matched: rows.filter(r => r.prefix_matched).length,
       price_changes: rows.filter(r => r.price_var).length,
+      oldest_due: rows.map(r => r.due).filter(Boolean).sort()[0] || null,   // the Count list puts the shipment with the oldest due date first
       no_bin: matched.filter(r => !r.bin).length,
       still_open: result.still_open.length,
       inv_value: rows.reduce((s, r) => s + (r.inv_qty || 0) * (r.inv_price || 0), 0),
@@ -1775,6 +1790,24 @@
     return pa.localeCompare(pb, 'en', { numeric: true }) || compareOurCode(ourPartFor(a, invoices), ourPartFor(b, invoices), a.supplier_code, b.supplier_code) || (a.line_no || 0) - (b.line_no || 0) || (a.seq - b.seq)
   }
   
+  // Shipment Reconciliation lists a shipment's invoices by the oldest PO first (the earliest order date in MYOB of the POs named on the
+  // invoice; where no date is known, the lower PO number, which is the older), and within that the lowest dollar value first.
+  function invoiceValue(inv) {
+    if (inv.invoice_total !== null && inv.invoice_total !== undefined && inv.invoice_total !== '') return +inv.invoice_total
+    return (inv.lines || []).filter(l => !l.removed).reduce((t, l) => t + (l.total != null && l.total !== '' ? +l.total : (+l.qty || 0) * (+l.price || 0)), 0)
+  }
+  function sortInvoicesForReconciliation(invoices, poLines) {
+    const dateOf = new Map()
+    for (const p of poLines || []) if (p.order_date && (!dateOf.has(String(p.po)) || String(p.order_date) < dateOf.get(String(p.po)))) dateOf.set(String(p.po), String(p.order_date))
+    const key = (inv, i) => {
+      const pos = [...new Set([...(String(inv.po || '').match(/\d{4,}/g) || []), ...(inv.lines || []).flatMap(l => String(l.po || '').match(/\d{4,}/g) || [])])]
+      const dates = pos.map(p => dateOf.get(p)).filter(Boolean).sort()
+      return { date: dates[0] || '', pono: pos.length ? Math.min(...pos.map(Number)) : Infinity, value: invoiceValue(inv), i }
+    }
+    return invoices.map((inv, i) => ({ inv, k: key(inv, i) })).sort((a, b) =>
+      (!a.k.date - !b.k.date) || a.k.date.localeCompare(b.k.date) || (a.k.pono - b.k.pono) || (a.k.value - b.k.value) || (a.k.i - b.k.i)).map(x => x.inv)
+  }
+  
   // The invoice's amount for a saved line. A freight line is the freight amount. Otherwise it is the amount printed on the
   // invoice line (suppliers work it out from an unrounded unit price, so it can differ by a few cents from qty x the printed
   // price, and those cents add up over a long invoice). It falls back to qty x price if the invoice line isn't there or its
@@ -1815,7 +1848,7 @@
       if (!groups.has(k)) groups.set(k, [])
       groups.get(k).push(l)
     }
-    const order = invoices.map(i => `${i.supplier}|${i.invoice_no}`)
+    const order = sortInvoicesForReconciliation(invoices, poLines).map(i => `${i.supplier}|${i.invoice_no}`)
     for (const k of groups.keys()) if (!order.includes(k)) order.push(k)
     for (const k of order) {
       const ls = (groups.get(k) || []).slice().sort((a, b) => comparePoThenPart(a, b, invoices))
@@ -1865,6 +1898,7 @@
         ws[`I${n}`] = { t: 'n', f: `IF(H${n}="","",H${n}-G${n})` }
         if (val !== null && val !== undefined) ws[`L${n}`] = { t: 'n', v: val, z: '#,##0.00' }   // the amount printed on the invoice line
         ws[`M${n}`] = { t: 'n', f: `IF(OR(J${n}="",J${n}=0,K${n}="",ABS(K${n}-J${n})<=0.005000001),"",(K${n}-J${n})/J${n})`, z: '0%' }
+        if (ws[`K${n}`]) ws[`K${n}`].z = '0.00'   // Inv Price shown to 2 decimals
       } else if (kind === 'total') {
         const sumCol = c => { let t = 0; for (let r = rng[0]; r <= rng[1]; r++) { const v = ws[`${c}${r}`]?.v; if (typeof v === 'number') t += v }; return Math.round(t * 100) / 100 }
         ws[`G${n}`] = { t: 'n', f: `SUM(G${rng[0]}:G${rng[1]})`, v: sumCol('G') }
@@ -2697,6 +2731,8 @@
 
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
   const fmtQty = v => (v === null || v === undefined || v === '') ? '' : (+v).toLocaleString('en-NZ', { maximumFractionDigits: 3 })
+  // the Inv price column is shown to 2 decimals (0.525 shows as 0.53)
+  const fmtPrice2 = v => v === null || v === undefined || v === '' || !Number.isFinite(+v) ? '' : (Math.round((+v + Number.EPSILON) * 100) / 100).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const fmtMoney = v => {
     if (v === null || v === undefined || v === '') return ''
     const n = +v
@@ -2970,7 +3006,7 @@
   const visibleShipments = (rows, currentId) => me.is_manager ? rows : rows.filter(s => s.status !== 'received' || s.id === currentId)
   function pickerHtml(currentId, base) {
     const rows = base === 'count' ? shipOptionsCache.rows.filter(s => s.status === 'open' || s.id === currentId)
-      : base === 'reconcile' ? shipOptionsCache.rows.filter(s => s.status !== 'received' || s.id === currentId)   // completed shipments are in Completed Shipments
+      : base === 'reconcile' || base === 'edit' ? shipOptionsCache.rows.filter(s => s.status !== 'received' || s.id === currentId)   // completed shipments are in Completed Shipments
       : visibleShipments(shipOptionsCache.rows, currentId)
     const opts = rows.map(s => `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${esc(shipName(s))}${s.status === 'received' ? ' (completed)' : ''}</option>`).join('')
     return `<label class="picker"><span>Shipment</span><select id="shipPick" aria-label="Choose shipment">${opts}</select></label>`
@@ -2982,7 +3018,7 @@
     setTop(base === 'count' ? 'Shipment Count' : base === 'edit' ? 'Shipment Edit' : 'Shipment Reconciliation', 'Choose a shipment')
     content.innerHTML = `<div class="empty-state">Loading shipments…</div>`
     try {
-      const rows = visibleShipments(await shipmentOptions(true))
+      const rows = visibleShipments(await shipmentOptions(true)).filter(s => base === 'count' || s.status !== 'received')   // completed shipments are not offered for editing or reconciling
       if (lastShipmentId && rows.some(r => r.id === lastShipmentId)) { location.replace(`#/${base}/${lastShipmentId}`); return }
       if (!rows.length) { content.innerHTML = me.is_manager
         ? `<div class="empty-state">No shipments yet. <a href="#/invoices">Add invoices in Invoice Creation</a>.</div>`
@@ -3253,9 +3289,8 @@
         sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'new'
         $('newNameRow').style.display = sel.value === 'new' ? '' : 'none'
       }
-      const open = data.filter(s => s.status !== 'received'), done = data.filter(s => s.status === 'received')
-      box.innerHTML = (open.length ? open.map(shipCardHtml).join('') : `<div class="empty-state">No open shipments. Add invoices above to start one.</div>`)
-        + (done.length ? `<details class="received-ships"><summary>Completed shipments (${done.length})</summary>${done.map(shipCardHtml).join('')}</details>` : '')
+      const open = data.filter(s => s.status !== 'received')   // completed shipments are in Completed Shipments, not here
+      box.innerHTML = open.length ? open.map(shipCardHtml).join('') : `<div class="empty-state">No open shipments. Add invoices above to start one.</div>`
     } catch (e) { box.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
@@ -3604,6 +3639,12 @@
   let editMsg = null     // {cls, html} shown once at the top
   let editBusy = false
 
+  // A completed shipment can't be edited. If one is opened by a link, say where it is.
+  function renderEditClosed(sh) {
+    setTop(shipName(sh), 'Shipment Edit', '')
+    content.innerHTML = `<a class="back-link" href="#/edit">← All shipments</a>
+      <div class="notice ok">This shipment is completed, so it can't be edited. ${me.is_manager ? 'It is in <a href="#/completed">Completed Shipments</a>, where it can be reopened if it needs a change.' : ''}</div>`
+  }
   async function showEdit(id) {
     rememberShipment(id)
     renderSidebar('edit')
@@ -3611,6 +3652,7 @@
     content.innerHTML = `<div class="empty-state">Loading shipment…</div>`
     try {
       await loadEdit(id)
+      if (editState.shipment.status === 'received') return renderEditClosed(editState.shipment)
       renderEdit()
       checkPoDrift()
     } catch (e) { setTop('Shipment Edit'); content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
@@ -3691,7 +3733,7 @@
     const nNeeds = rows.filter(needsCode).length, nManual = rows.filter(isManual).length, nChanged = rows.filter(isChanged).length, nCheck = rows.filter(toCheck).length
     const note = editMsg; editMsg = null
     setTop(shipName(sh), `Shipment Edit · ${plural((sh.invoices || []).length, 'invoice')}`,
-      `${pickerHtml(sh.id)}
+      `${pickerHtml(sh.id, 'edit')}
        <a class="btn" href="#/count/${sh.id}">Shipment Count →</a>`)
     wirePicker('edit')
     if (editFilter === 'check' && !nCheck) editFilter = nNeeds ? 'needs' : nManual ? 'manual' : nChanged ? 'changed' : 'all'
@@ -4435,15 +4477,23 @@
     content.querySelectorAll('td.count input').forEach(inp => {
       inp.addEventListener('change', () => saveItemCount(inp))
       inp.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') {   // the count is saved, and the cursor goes back to the scan box ready for the next scan
+        const tr = inp.closest('tr')
+        if (ev.key === 'Enter') {
           ev.preventDefault()
-          inp.blur(); $('scanInput').focus()
-        }
+          inp.blur()   // saves the count
+          if (cur.scanKey && tr.dataset.key === cur.scanKey) { const lq = tr.querySelector('.lbl-qty'); if (lq) { lq.focus(); lq.select(); return } }   // a scanned line: on to Print Qty
+          $('scanInput').focus()   // any other line: back to the search box
+        } else if (ev.key === 'Escape') { ev.preventDefault(); inp.blur(); endScanLine('') }
       })
     })
     // labels: a quantity box and Print button on every row, and one button for the whole shipment
     $('lines').addEventListener('click', ev => {
       const b = ev.target.closest('.lbl-print'); if (b) printItemLabels(b.closest('tr'))
+    })
+    $('lines').addEventListener('keydown', ev => {
+      if (!ev.target.matches('.lbl-qty')) return
+      if (ev.key === 'Enter') { ev.preventDefault(); printItemLabels(ev.target.closest('tr')) }
+      else if (ev.key === 'Escape') { ev.preventDefault(); endScanLine('') }
     })
     content.querySelectorAll('td.note input').forEach(inp => {
       inp.addEventListener('change', () => saveItemNote(inp))
@@ -4549,6 +4599,20 @@
     }
     return { kind: 'none' }
   }
+  // The search box stays at the top of the screen while the list scrolls under it, so the found line is scrolled to just below the box.
+  function showRowBelowPanel(tr) {
+    if (!tr) return
+    tr.style.scrollMarginTop = `${($('scanPanel') ? $('scanPanel').offsetHeight : 0) + 14}px`
+    tr.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }
+  const clearScanMarks = () => { content.querySelectorAll('#lines tr.scan-hit, #lines tr.scan-cand').forEach(r => r.classList.remove('scan-hit', 'scan-cand')); content.querySelectorAll('#lines td.scan-focus').forEach(td => td.classList.remove('scan-focus')) }
+  // After any action on the Count screen (a count saved, a note, a label printed, a filter or button pressed) the cursor goes back to the
+  // scan box. It is left alone if the person has moved into another box to type.
+  const scanFocusSoon = () => setTimeout(() => {
+    const s = $('scanInput'); if (!s || !document.body.contains(s) || cur.shipment.status !== 'open') return
+    const a = document.activeElement
+    if (!a || a === document.body || (a !== s && a.matches('button, a, select, input[type="checkbox"], .chip'))) s.focus()
+  }, 0)
   function scanMsg(html, cls = '') { $('scanResult').innerHTML = html ? `<div class="scan-msg ${cls}">${html}</div>` : '' }
   function wireScan() {
     if (cur.shipment.status !== 'open') return
@@ -4559,7 +4623,7 @@
       if (ev.key !== 'Enter') return
       ev.preventDefault()
       const term = input.value.trim(); if (!term) return
-      scanMsg('Looking…')
+      clearScanMarks(); scanMsg('Looking…')
       let r
       try { r = await scanLookup(term) } catch (e) { scanMsg(`Couldn't search: ${esc(friendlyDbError(e))}`, 'bad'); input.select(); return }
       if (r.kind === 'none') { scanMsg(`<strong>${esc(term)}</strong> is not on this shipment.`, 'bad'); input.select(); return }
@@ -4567,47 +4631,47 @@
       if (r.items.length === 1) return showScanItem(r.items[0])
       $('scanResult').innerHTML = `<div class="scan-msg">${r.items.length} items match. Choose one:</div><div class="scan-list">${r.items.slice(0, 8).map(it => `<button type="button" class="scan-pick" data-key="${esc(it.key)}"><strong>${esc(it.stock_code || it.supplier_code)}</strong> ${esc(it.description)}<span>Invoiced ${fmtQty(it.expected)}${it.received !== null ? ` · counted ${fmtQty(it.received)}` : ''}</span></button>`).join('')}</div>${r.items.length > 8 ? `<div class="scan-msg">Showing 8 of ${r.items.length}. Type more of the code.</div>` : ''}`
       $('scanResult').querySelectorAll('.scan-pick').forEach(b => b.onclick = () => showScanItem(cur.items.find(it => it.key === b.dataset.key)))
+      clearScanMarks()
+      let firstRow = null
+      for (const it of r.items) { const row = [...content.querySelectorAll('#lines tbody tr')].find(x => x.dataset.key === it.key); if (row) { row.classList.add('scan-cand'); firstRow = firstRow || row } }
+      showRowBelowPanel(firstRow)   // every match is marked in the list, and the first is brought into view
     })
-    $('scanClear').onclick = () => { input.value = ''; scanMsg(''); input.focus() }
+    $('scanClear').onclick = () => { clearScanMarks(); input.value = ''; scanMsg(''); input.focus() }
+    // any action on the screen sends the cursor back here
+    for (const el of [$('lines'), content.querySelector('.filters'), content.querySelector('.count-labels'), $('dlBtn')]) if (el) el.addEventListener('click', ev => { if (ev.target.closest('button, .chip, a, label')) scanFocusSoon() })
+    for (const el of [content.querySelector('.count-labels')]) if (el) el.addEventListener('change', ev => { if (ev.target.matches('select, input[type="checkbox"]')) scanFocusSoon() })
     setTimeout(() => { if ($('scanInput')) $('scanInput').focus() }, 0)   // ready for the first scan
   }
-  // the item's count box: the row is shown and highlighted, and the cursor is in a big count box
+  // A found item is worked on in its own line in the list: the line is marked and scrolled to just under the search box, and the cursor
+  // is in its Received box. Type the quantity and press Enter: the count is saved and the cursor moves to Print Qty. Change it if needed
+  // and press Enter (or Print) to print the labels, and the cursor goes back to the search box. Escape goes back to the search box at any point.
   function showScanItem(it) {
     const tr = [...content.querySelectorAll('#lines tbody tr')].find(r => r.dataset.key === it.key)
     if (tr && tr.hidden) { const allChip = content.querySelector('.chip[data-f="all"]'); if (allChip) allChip.click() }
-    if (tr) { tr.scrollIntoView({ block: 'center', behavior: 'smooth' }); tr.classList.add('scan-hit'); setTimeout(() => tr.classList.remove('scan-hit'), 4000) }
-    const counted = it.received !== null
-    $('scanResult').innerHTML = `<div class="scan-card ${esc(it.status)}">
-      <div class="scan-main">
-        <div class="scan-code">${esc(it.stock_code || it.supplier_code)}${it.stock_code && it.supplier_code && normCode(it.stock_code) !== normCode(it.supplier_code) ? `<span>${esc(it.supplier_code)}</span>` : ''}</div>
-        <div class="scan-desc">${esc(it.description)}</div>
-        <div class="scan-meta">Bin ${esc(it.bin || 'none')} · Invoiced <strong>${fmtQty(it.expected)}</strong>${counted ? ` · already counted <strong>${fmtQty(it.received)}</strong> (your count replaces it)` : ''}${it.status === 'not_on_po' ? ' · <strong class="bad">not on a PO</strong>' : it.status === 'over' ? ' · <strong class="bad">more than is on order</strong>' : ''}</div>
-      </div>
-      <div class="scan-entry">
-        <label for="scanQty">Count</label>
-        <input id="scanQty" type="number" inputmode="decimal" min="0" step="any" placeholder="Qty" aria-label="Quantity counted for ${esc(it.stock_code || it.supplier_code)}">
-        <button class="btn" id="scanSave" type="button">Save count</button>
-        <button class="btn ghost" id="scanSame" type="button">Same as invoice (${fmtQty(it.expected)})</button>
-        <button class="btn ghost" id="scanCancel" type="button">Cancel</button>
-      </div>
+    clearScanMarks(); cur.scanKey = it.key
+    const code = esc(it.stock_code || it.supplier_code)
+    $('scanResult').innerHTML = `<div class="scan-found ${esc(it.status)}">
+      <div><span class="scan-code">${code}</span>${it.stock_code && it.supplier_code && normCode(it.stock_code) !== normCode(it.supplier_code) ? `<span class="scan-alt">${esc(it.supplier_code)}</span>` : ''}
+        <span class="scan-desc">${esc(it.description)}</span>
+        <span class="scan-meta">Bin ${esc(it.bin || 'none')} · Invoiced <strong>${fmtQty(it.expected)}</strong>${it.received !== null ? ` · already counted <strong>${fmtQty(it.received)}</strong>` : ''}${it.status === 'not_on_po' ? ' · <strong class="bad">not on a PO</strong>' : it.status === 'over' ? ' · <strong class="bad">more than is on order</strong>' : ''}</span></div>
+      <div class="scan-steps">Type the quantity received in the marked box and press <b>Enter</b>, change <b>Print Qty</b> if needed, then press <b>Enter</b> or <b>Print</b>.
+        <button class="btn ghost" id="scanSame" type="button">Received = invoiced (${fmtQty(it.expected)})</button><button class="btn ghost" id="scanCancel" type="button">Cancel</button></div>
+      <div id="scanSaved" class="scan-saved"></div>
     </div>`
-    const qty = $('scanQty'); qty.focus()
-    const back = () => { $('scanInput').value = ''; $('scanInput').focus() }
-    const save = async v => {
-      const raw = String(v).trim(), n = Number(raw)
-      if (raw === '' || !Number.isFinite(n) || n < 0) { qty.classList.add('failed'); qty.focus(); return }
-      const rowInput = tr && tr.querySelector('td.count input')
-      if (!rowInput) return
-      rowInput.value = raw
-      await saveItemCount(rowInput)
-      if (rowInput.classList.contains('failed')) { scanMsg(`Couldn't save the count for <strong>${esc(it.stock_code || it.supplier_code)}</strong>: ${esc(rowInput.title || 'try again')}`, 'bad'); return }
-      scanMsg(`Saved <strong>${esc(it.stock_code || it.supplier_code)}</strong>: counted ${fmtQty(n)} (invoiced ${fmtQty(it.expected)})${n !== +it.expected ? ' <strong class="bad">differs</strong>' : ''}`, n !== +it.expected ? 'warn' : 'ok')
-      back()   // ready for the next scan
-    }
-    qty.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(qty.value) } else if (ev.key === 'Escape') { ev.preventDefault(); scanMsg(''); back() } })
-    $('scanSave').onclick = () => save(qty.value)
-    $('scanSame').onclick = () => save(it.expected)
-    $('scanCancel').onclick = () => { scanMsg(''); back() }
+    if (!tr) { scanMsg(`<strong>${code}</strong> is on this shipment but not in the list.`, 'bad'); return }
+    tr.classList.add('scan-hit'); tr.querySelector('td.count').classList.add('scan-focus')
+    const recv = tr.querySelector('td.count input'), lq = tr.querySelector('.lbl-qty')
+    showRowBelowPanel(tr)
+    recv.focus(); recv.select()
+    const toPrintQty = () => { if (lq) { lq.focus(); lq.select() } }
+    $('scanSame').onclick = async () => { recv.value = it.expected; await saveItemCount(recv); toPrintQty() }
+    $('scanCancel').onclick = () => endScanLine('')
+  }
+  // The line is finished with (printed, skipped or cancelled): the marks go and the cursor goes back to an empty search box.
+  function endScanLine(msg, cls = 'ok') {
+    clearScanMarks(); cur.scanKey = null
+    const input = $('scanInput'); if (!input) return
+    input.value = ''; scanMsg(msg, cls); input.focus()
   }
 
   // The note for an item. It is kept on the item's first line; if the item is on more than one invoice line the others are cleared,
@@ -4625,6 +4689,7 @@
     patches.forEach(p => { p.l.variance_note = p.note })
     finishItem(it)
     inp.classList.add('saved')
+    scanFocusSoon()
   }
 
   // Confirm shipment: the count is finished. The shipment goes to Reconciliation (and leaves this screen), and an email to
@@ -4690,6 +4755,8 @@
     tr.dataset.tags = itemTags(it)
     tr.querySelector('td.diff').innerHTML = diffHtml(it)
     updateProgress()   // the shipment stays open until Confirm shipment is pressed
+    if ($('scanSaved') && cur.scanKey === it.key && value !== null) $('scanSaved').innerHTML = `Counted <strong>${fmtQty(value)}</strong> (invoiced ${fmtQty(it.expected)})${value !== +it.expected ? ' <strong class="bad">differs</strong>' : ''}`
+    scanFocusSoon()
   }
 
   // ---------- labels from Shipment Count ----------
@@ -4725,16 +4792,20 @@
 
   async function printItemLabels(tr) {
     const it = cur.items.find(x => x.key === tr.dataset.key); if (!it) return
+    const scanned = cur.scanKey === it.key
+    const label = esc(it.stock_code || it.supplier_code)
     const n = rowLabelQty(tr)
-    if (n === 0) { setRowLabelStatus(tr, 'Print Qty is 0, so nothing to print.', true); return }
+    if (n === 0) { setRowLabelStatus(tr, 'Print Qty is 0, so nothing to print.', true); if (scanned) endScanLine(`No labels printed for <strong>${label}</strong> (Print Qty is 0).`); return }
     if (!Number.isFinite(n) || n < 1) { setRowLabelStatus(tr, 'Enter how many labels.', true); tr.querySelector('.lbl-qty').focus(); return }
     setRowLabelStatus(tr, 'Looking up…')
-    try { await loadItemLabels([it]) } catch (e) { setRowLabelStatus(tr, labelLookupError(e), true); return }
+    try { await loadItemLabels([it]) } catch (e) { setRowLabelStatus(tr, labelLookupError(e), true); if (scanned) endScanLine(`<strong>${label}</strong>: ${esc(labelLookupError(e))}`, 'bad'); return }
     const row = cur.labelRows.get(it.key)
-    if (!row) { setRowLabelStatus(tr, 'No label data in MYOB for this item.', true); return }
+    if (!row) { setRowLabelStatus(tr, 'No label data in MYOB for this item.', true); if (scanned) endScanLine(`<strong>${label}</strong> has no label data in MYOB, so nothing was printed.`, 'bad'); return }
     if (n > 500 && !confirm(`Print ${n.toLocaleString()} labels?`)) { setRowLabelStatus(tr, ''); return }
     setRowLabelStatus(tr, '')
-    printLabelJobs(countLabelType(), [{ data: labelDataFrom(row), n }], () => setRowLabelStatus(tr, `Sent ${n} to the printer`))
+    printLabelJobs(countLabelType(), [{ data: labelDataFrom(row), n }], () => { setRowLabelStatus(tr, `Sent ${n} to the printer`); scanFocusSoon() })
+    if (scanned) endScanLine(`Printing <strong>${n}</strong> label${n === 1 ? '' : 's'} for <strong>${label}</strong>.`)   // back to the search box for the next scan
+    else scanFocusSoon()
   }
 
   // One print job for the whole shipment: every row's label, in the order on screen, each as many times as its quantity box says.
@@ -4762,7 +4833,9 @@
     printLabelJobs(countLabelType(), jobs, () => {
       msg.textContent = `Sent ${total.toLocaleString()} labels for ${plural(jobs.length, 'item')} to the printer.${missing.length ? ` ${plural(missing.length, 'item')} had no label data.` : ''}`
       jobs.forEach(j => setRowLabelStatus(j.tr, `Sent ${j.n} to the printer`))
+      scanFocusSoon()
     })
+    scanFocusSoon()
   }
 
   // One sheet per invoice, each sorted by Cama code A to Z (see invoiceCheckoffWorkbook in core).
@@ -4818,7 +4891,7 @@
         <div class="ship-title"><a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}</div>
         <div class="ship-actions"><a class="btn" href="${href}">${isCount ? 'Count' : isPurch ? 'View outstanding' : 'Reconcile'} →</a></div>
       </div>
-      <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${isPurch ? ` · ${plural(sm.still_open || 0, 'line')} still outstanding` : money && toCheck ? ` · ${toCheck} to check` : ''}</div>
+      <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${isCount && sm.oldest_due ? ` · <span class="${sm.oldest_due < new Date().toISOString().slice(0, 10) ? 'warn-text' : ''}">Oldest due ${esc(fmtDay(sm.oldest_due))}${sm.oldest_due < new Date().toISOString().slice(0, 10) ? ' (overdue)' : ''}</span>` : ''}${isPurch ? ` · ${plural(sm.still_open || 0, 'line')} still outstanding` : money && toCheck ? ` · ${toCheck} to check` : ''}</div>
       <div class="table-wrap"><table class="grid inv-table">
         <thead><tr><th>Invoice</th><th>Supplier</th><th>PO</th><th class="num">Lines</th><th class="num">Pieces</th>${money ? '<th class="num">Total</th>' : ''}</tr></thead>
         <tbody>${rows}</tbody></table></div>
@@ -4832,6 +4905,26 @@
     }
   }
 
+  // The oldest due date in MYOB of the PO lines a shipment is on. New and re-matched shipments keep it in their summary; shipments made
+  // before that are worked out here once (the match is run again from the saved invoices and PO lines) and saved.
+  async function fillOldestDue(list) {
+    const need = list.filter(s => (s.summary || {}).oldest_due === undefined)
+    if (!need.length) return
+    const { data } = await supabase.from('shipments').select('id, invoices, po_lines, summary').in('id', need.map(s => s.id))
+    for (const f of data || []) {
+      const s = list.find(x => x.id === f.id); if (!s) continue
+      let oldest = null
+      try { oldest = summarise(f.invoices || [], f.po_lines || [], matchShipment(f.invoices || [], f.po_lines || [])).oldest_due } catch { /* no date: it goes to the end of the list */ }
+      s.summary = { ...(f.summary || {}), oldest_due: oldest }
+      await supabase.from('shipments').update({ summary: s.summary }).eq('id', f.id)
+    }
+  }
+  const fmtDay = d => { const t = new Date(`${String(d).slice(0, 10)}T00:00:00`); return Number.isNaN(+t) ? String(d) : t.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' }) }
+  const dueOrder = (a, b) => {
+    const x = (a.summary || {}).oldest_due || '', y = (b.summary || {}).oldest_due || ''
+    if (!x !== !y) return x ? -1 : 1
+    return x.localeCompare(y) || String(a.created_at).localeCompare(String(b.created_at))
+  }
   async function showCountList() {
     renderSidebar('count')
     setTop('Shipment Count', 'Choose a shipment to count')
@@ -4840,6 +4933,8 @@
       const all = await loadShipmentCards()
       shipOptionsCache = { at: Date.now(), rows: all }
       const data = all.filter(s => s.status === 'open')   // a shipment leaves this screen when its count is confirmed
+      await fillOldestDue(data)
+      data.sort(dueOrder)   // the shipment with the oldest due date in MYOB is at the top
       const notice = countNotice ? `<div class="notice ok">${esc(countNotice)}</div>` : ''
       countNotice = ''
       if (!data.length) {
@@ -4851,7 +4946,7 @@
       const group = (title, list, open = true) => !list.length ? '' : open
         ? `<div class="group-title">${title}<span class="count">${list.length}</span></div>${list.map(s => listCardHtml(s, 'count')).join('')}`
         : `<details class="received-ships"><summary>${title} (${list.length})</summary>${list.map(s => listCardHtml(s, 'count')).join('')}</details>`
-      content.innerHTML = notice + group('To count', data)
+      content.innerHTML = notice + group('To count: oldest due date first', data)
       wireCardClicks()
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
@@ -4894,7 +4989,7 @@
     const { shipment: sh, lines } = recon
     const map = new Map()
     for (const l of lines) { const k = `${l.supplier}|${l.invoice_no}`; if (!map.has(k)) map.set(k, []); map.get(k).push(l) }
-    const order = (sh.invoices || []).map(invKey)
+    const order = sortInvoicesForReconciliation(sh.invoices || [], sh.po_lines || []).map(invKey)   // oldest PO first, then lowest value
     for (const k of map.keys()) if (!order.includes(k)) order.push(k)
     return order.filter(k => map.has(k)).map(k => {
       const inv = (sh.invoices || []).find(i => invKey(i) === k) || {}
@@ -4914,7 +5009,7 @@
     const freightText = [...frByCur].map(([c, n]) => moneyText(c, n)).join(' + ')
     const received = sh.status === 'received'
     setTop(shipName(sh), `Shipment Reconciliation · ${plural(groups.length, 'invoice')} · ${statusTag(sh.status).replace(/<[^>]+>/g, '')}`,
-      `${pickerHtml(sh.id)}
+      `${pickerHtml(sh.id, 'reconcile')}
        <button class="btn" id="dlBtn">Download reconciliation</button>
        <button class="btn ghost" id="printBtn">Print</button>
        ${sh.status === 'open' ? `<a class="btn ghost" href="#/count/${sh.id}">← Count</a>` : sh.status === 'counted' ? '<button class="btn ghost" id="reopenCountBtn" type="button">Reopen count</button>' : ''}
@@ -5095,7 +5190,7 @@
       <td class="num col-recv recv-edit">${isFreightFlags(l.flags) ? '—' : `<input type="number" inputmode="decimal" min="0" step="any" value="${isCounted(l) ? esc(l.received) : ''}" placeholder="—" ${recon.shipment.status === 'received' ? 'disabled title="Reopen the shipment to change this"' : ''} aria-label="Received quantity for ${esc(l.stock_code || l.supplier_code)}">`}</td>
       <td class="num var" data-sort="${sortVariance(l)}">${varHtml(l)}</td>
       <td class="num hide-sm">${fmtMoney(l.po_price)}</td>
-      <td class="num hide-sm ${fr !== null ? 'freight-amt' : ''}">${fr !== null ? fmtMoney(fr) : fmtMoney(l.inv_price)}</td>
+      <td class="num hide-sm ${fr !== null ? 'freight-amt' : ''}">${fr !== null ? fmtMoney(fr) : fmtPrice2(l.inv_price)}</td>
       <td class="num">${reconLineTotal(l) === null ? '—' : esc(reconMoney(reconLineTotal(l)))}</td>
       <td class="num hide-sm chg ${fr === null && pv > 0 ? 'up' : fr === null && pv < 0 ? 'down' : ''}" data-sort="${fr === null && Number.isFinite(pv) ? pv : ''}">${fr === null ? fmtPct(pv) : ''}</td>
       <td class="note"><input type="text" maxlength="300" value="${esc(l.variance_note || '')}" placeholder="Add a note" aria-label="Note for ${esc(l.stock_code || l.supplier_code)}"></td>
@@ -5246,6 +5341,7 @@
     const { error } = await supabase.from('shipments').update({ status, summary }).eq('id', sh.id)
     if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
     sh.status = status; sh.summary = summary; shipOptionsCache.at = 0
+    if (completing && lastShipmentId === sh.id) { lastShipmentId = null; try { sessionStorage.removeItem('rx_last_shipment') } catch {} }
     if (completing) { completedNotice = `"${shipName(sh)}" is complete. It has moved here from Shipment Reconciliation.`; location.hash = '#/completed' } else renderReconcile()
   }
 
