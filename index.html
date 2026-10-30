@@ -1854,7 +1854,7 @@
       const ls = (groups.get(k) || []).slice().sort((a, b) => comparePoThenPart(a, b, invoices))
       const inv = invoices.find(i => `${i.supplier}|${i.invoice_no}` === k)
       const head = ls[0] || {}
-      aoa.push([`Invoice ${inv?.invoice_no || head.invoice_no}  ${inv?.supplier || head.supplier || ''}  PO ${inv?.po || ''}`])
+      aoa.push([`Invoice ${inv?.invoice_no || head.invoice_no}  ${inv?.supplier || head.supplier || ''}  PO ${inv?.po || ''}${inv?.invoice_date ? `  Invoice date ${inv.invoice_date}` : ''}`])
       const first = aoa.length + 1
       const many = new Set(ls.map(poOf).filter(Boolean)).size > 1       // an invoice on two or more POs is grouped by PO, each group with its own heading
       let curPo = null
@@ -3300,12 +3300,12 @@
     const invs = s.invoice_list || []
     const moveOpts = shipList.filter(x => x.id !== s.id && x.status !== 'received')
     const rows = invs.length ? invs.map(i => `<tr>
-        <td><strong>${esc(i.invoice_no)}</strong></td><td>${esc(i.supplier)}</td><td>${esc(i.po || '')}</td>
+        <td><strong>${esc(i.invoice_no)}</strong></td><td>${i.date ? esc(fmtDay(i.date)) : '<span class="muted">—</span>'}</td><td>${esc(i.supplier)}</td><td>${esc(i.po || '')}</td>
         <td class="num">${i.lines}</td><td class="num">${fmtQty(i.pcs)}</td>
         <td class="num">${i.total != null ? esc(i.currency || '') + ' ' + fmtMoney(i.total) : ''}</td>
         <td class="act">${s.status === 'received' ? '' : `<select class="move-sel" data-id="${s.id}" data-key="${esc(i.key)}" aria-label="Move invoice ${esc(i.invoice_no)} to another shipment"><option value="">Move to…</option><option value="new">A new shipment</option>${moveOpts.map(o => `<option value="${o.id}">${esc(shipName(o))}</option>`).join('')}</select>
           <button class="link-btn danger" data-act="remove" data-id="${s.id}" data-key="${esc(i.key)}">Remove</button>`}</td></tr>`).join('')
-      : `<tr><td colspan="7" class="muted">No invoices in this shipment.</td></tr>`
+      : `<tr><td colspan="8" class="muted">No invoices in this shipment.</td></tr>`
     return `<div class="ship-card" data-id="${s.id}">
       <div class="ship-head">
         <div class="ship-title"><span class="ship-name">${esc(shipName(s))}</span>
@@ -3321,7 +3321,7 @@
       </div>
       <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${toCheck ? ` · <a class="warn-text" href="#/edit/${s.id}" title="Open Shipment Edit on these lines">${toCheck} to check</a>` : ''}</div>
       <div class="table-wrap"><table class="grid inv-table">
-        <thead><tr><th>Invoice</th><th>Supplier</th><th>PO</th><th class="num">Lines</th><th class="num">Pieces</th><th class="num">Total</th><th></th></tr></thead>
+        <thead><tr><th>Invoice</th><th>Invoice date</th><th>Supplier</th><th>PO</th><th class="num">Lines</th><th class="num">Pieces</th><th class="num">Total</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>
     </div>`
   }
@@ -3828,7 +3828,7 @@
   function editCardHtml(g) {
     const inv = g.inv
     const cur = inv.currency || ''
-    const meta = [inv.po ? `PO ${esc(inv.po)}` : '', inv.invoice_date ? esc(inv.invoice_date) : '', plural(inv.lines.filter(l => !l.removed).length, 'line')].filter(Boolean).join(' · ')
+    const meta = [inv.po ? `PO ${esc(inv.po)}` : '', inv.invoice_date ? `Invoice date ${esc(fmtDay(inv.invoice_date))}` : '', plural(inv.lines.filter(l => !l.removed).length, 'line')].filter(Boolean).join(' · ')
     return `<details class="inv-card" open data-key="${esc(invKey(inv))}">
       <summary><div><div class="inv-title">Invoice ${esc(inv.invoice_no)} · ${esc(inv.supplier)}</div><div class="inv-sub">${meta}</div></div>
         <button class="btn ghost add-line" type="button" data-act="add-line" data-key="${esc(invKey(inv))}">+ Add line</button></summary>
@@ -4880,20 +4880,21 @@
     const isCount = base === 'count', isPurch = base === 'purchasing'
     const money = me.is_manager   // warehouse staff see quantities, not values
     const rows = invs.length ? invs.map(i => `<tr>
-        <td><strong>${esc(i.invoice_no)}</strong></td><td>${esc(i.supplier)}</td><td>${esc(i.po || '')}</td>
+        <td><strong>${esc(i.invoice_no)}</strong></td><td>${i.date ? esc(fmtDay(i.date)) : '<span class="muted">—</span>'}</td><td>${esc(i.supplier)}</td><td>${esc(i.po || '')}</td>
         <td class="num">${i.lines}</td><td class="num">${fmtQty(i.pcs)}</td>
         ${money ? `<td class="num">${i.total != null ? esc(i.currency || '') + ' ' + fmtMoney(i.total) : ''}</td>` : ''}</tr>`).join('')
-      : `<tr><td colspan="${money ? 6 : 5}" class="muted">No invoices in this shipment.</td></tr>`
+      : `<tr><td colspan="${money ? 7 : 6}" class="muted">No invoices in this shipment.</td></tr>`
     const toCheck = (sm.not_on_po || 0) + (sm.over || 0)
     const href = `#/${base}/${s.id}`
-    return `<div class="ship-card clickable" data-href="${href}">
+    const hay = [shipName(s), ...(s.suppliers || []), ...(s.invoice_nos || []), ...invs.map(i => i.invoice_no), ...shipPOs(s)].join(' ')
+    return `<div class="ship-card clickable" data-href="${href}" data-hay="${esc(hay.toLowerCase())}" data-norm="${esc(normCode(hay))}">
       <div class="ship-head">
         <div class="ship-title"><a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}</div>
         <div class="ship-actions"><a class="btn" href="${href}">${isCount ? 'Count' : isPurch ? 'View outstanding' : 'Reconcile'} →</a></div>
       </div>
       <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${isCount && sm.oldest_due ? ` · <span class="${sm.oldest_due < new Date().toISOString().slice(0, 10) ? 'warn-text' : ''}">Oldest due ${esc(fmtDay(sm.oldest_due))}${sm.oldest_due < new Date().toISOString().slice(0, 10) ? ' (overdue)' : ''}</span>` : ''}${isPurch ? ` · ${plural(sm.still_open || 0, 'line')} still outstanding` : money && toCheck ? ` · ${toCheck} to check` : ''}</div>
       <div class="table-wrap"><table class="grid inv-table">
-        <thead><tr><th>Invoice</th><th>Supplier</th><th>PO</th><th class="num">Lines</th><th class="num">Pieces</th>${money ? '<th class="num">Total</th>' : ''}</tr></thead>
+        <thead><tr><th>Invoice</th><th>Invoice date</th><th>Supplier</th><th>PO</th><th class="num">Lines</th><th class="num">Pieces</th>${money ? '<th class="num">Total</th>' : ''}</tr></thead>
         <tbody>${rows}</tbody></table></div>
     </div>`
   }
@@ -4946,8 +4947,32 @@
       const group = (title, list, open = true) => !list.length ? '' : open
         ? `<div class="group-title">${title}<span class="count">${list.length}</span></div>${list.map(s => listCardHtml(s, 'count')).join('')}`
         : `<details class="received-ships"><summary>${title} (${list.length})</summary>${list.map(s => listCardHtml(s, 'count')).join('')}</details>`
-      content.innerHTML = notice + group('To count: oldest due date first', data)
+      content.innerHTML = notice + `<div class="search-row">
+          <input id="countSearch" type="search" placeholder="Search shipments by PO number (or invoice number, supplier)" autocomplete="off" aria-label="Search shipments">
+          <span class="muted" id="countSearchN"></span>
+        </div>
+        <div id="countCards">${group('To count: oldest due date first', data)}</div>
+        <div class="empty-state" id="countNone" hidden></div>`
       wireCardClicks()
+      // Type or scan a PO number (part of it is enough; invoice numbers and supplier names work too). Enter opens the shipment when only one is left.
+      const cards = [...content.querySelectorAll('#countCards .ship-card')]
+      const find = () => {
+        const raw = $('countSearch').value.trim(), terms = raw.toLowerCase().split(/\s+/).filter(Boolean)
+        const hit = cards.filter(c => terms.every(t => c.dataset.hay.includes(t) || (normCode(t) && c.dataset.norm.includes(normCode(t)))))
+        cards.forEach(c => { c.hidden = !hit.includes(c) })
+        const gt = content.querySelector('#countCards .group-title .count'); if (gt) gt.textContent = hit.length
+        $('countSearchN').textContent = terms.length ? `${hit.length} of ${cards.length} shipment${cards.length === 1 ? '' : 's'}${hit.length === 1 ? ' · press Enter to open it' : ''}` : ''
+        $('countNone').hidden = hit.length > 0 || !terms.length
+        $('countNone').textContent = `No shipment to count matches "${raw}".`
+        return hit
+      }
+      $('countSearch').addEventListener('input', find)
+      $('countSearch').addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { const hit = find(); if (hit.length === 1) location.hash = hit[0].dataset.href.slice(1) }
+        else if (ev.key === 'Escape') { $('countSearch').value = ''; find() }
+      })
+      $('countSearch').addEventListener('focus', () => $('countSearch').select())
+      $('countSearch').focus()
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
@@ -5109,7 +5134,7 @@
       extraRows += amountRow('Invoice total (printed on the invoice)', printed)
       extraRows += `<tr class="tot-verdict"><td></td><td colspan="11">${Math.abs(diff) <= 0.015 ? '<span class="tot-ok">&#10003; The line total is the same as the invoice total.</span>' : `<span class="tot-warn">&#10007; The line total is ${esc(reconMoney(Math.abs(diff), cur))} ${diff > 0 ? 'more' : 'less'} than the invoice total.</span>`}</td></tr>`
     }
-    const meta = [g.inv.po ? `PO ${esc(g.inv.po)}` : '', g.inv.invoice_date ? esc(g.inv.invoice_date) : '', g.inv.invoice_total != null ? `Total ${esc(cur)} ${fmtMoney(g.inv.invoice_total)}` : '', `${plural(ls.length, 'line')}`].filter(Boolean).join(' · ')
+    const meta = [g.inv.po ? `PO ${esc(g.inv.po)}` : '', g.inv.invoice_date ? `Invoice date ${esc(fmtDay(g.inv.invoice_date))}` : '', g.inv.invoice_total != null ? `Total ${esc(cur)} ${fmtMoney(g.inv.invoice_total)}` : '', `${plural(ls.length, 'line')}`].filter(Boolean).join(' · ')
     return `<details class="inv-card" open data-key="${esc(g.key)}">
       <summary>
         <div><div class="inv-title">Invoice ${esc(g.invoice_no)} · ${esc(g.supplier)}</div><div class="inv-sub">${meta}</div></div>
