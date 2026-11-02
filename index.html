@@ -175,6 +175,7 @@
   tr.to-check.not_on_po td { background: var(--err-tint); }
   tr.to-check td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
   tr.to-check.not_on_po td:first-child { box-shadow: inset 4px 0 0 var(--err); }
+  .sub.why { display: block; font-size: 12px; color: var(--slate); margin: 2px 0; line-height: 1.35; }
   .check-flag { display: block; font-size: 12px; font-weight: 700; color: var(--warn); margin-bottom: 2px; }
   .status-tag { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
   .status-tag.open { background: rgba(33,64,154,0.08); color: var(--navy); }
@@ -359,6 +360,14 @@
   td.recv-edit input.saved { border-color: var(--ok); }
   td.recv-edit input.failed { border-color: var(--err); }
   td.recv-edit input:disabled { background: transparent; border-color: transparent; }
+  .shipfind { position: relative; }
+  .shipfind input { width: 240px; padding: 7px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .shipfind input:focus { outline: 2px solid var(--navy); outline-offset: -1px; }
+  .shipfind-results { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; width: 380px; max-height: 360px; overflow-y: auto; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 28px -10px rgba(20,30,60,0.4); padding: 6px; }
+  .shipfind-item { display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0; background: transparent; border-radius: 8px; cursor: pointer; font: inherit; }
+  .shipfind-item:hover, .shipfind-item:focus { background: #F0F4FA; outline: none; }
+  .shipfind-item span { display: block; font-size: 12px; color: var(--slate-dim); margin-top: 1px; }
+  .shipfind-more { padding: 8px 10px; font-size: 13px; color: var(--slate); }
   .search-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 14px; }
   .search-row input { flex: 1 1 380px; max-width: 560px; padding: 10px 12px; font-size: 15px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
   .search-row input:focus { outline: 2px solid var(--navy); outline-offset: -1px; }
@@ -2270,15 +2279,24 @@
           invoice_total: usNum((txt.match(/Invoice Total:\s*\$([\d,]+\.\d{2})/) || [])[1]), lines: [], notes: [], source,
         }
         const COL = colsOf(['no', 60], ['item', 148], ['desc', 370], ['qty', 405], ['list', 460], ['unit', 535], ['total', Infinity])
-        let last = null
-        for (const page of group) for (const line of page.lines) {
-          const c = cellsOf(line, COL)
-          const cust = (c.item || '').match(/^Cust Item#:\s*(.*)$/)
-          if (cust && last) { last.our_code = cust[1].trim(); continue }
-          if (/^\d{1,3}$/.test(c.no || '') && c.item && /^\$/.test(c.total || '')) {
-            last = addLine(inv, { code: c.item, desc: c.desc || '', qty: usNum(c.qty), price: usNum(c.unit), total: usNum(c.total) })
+        // Each page prints its own "PO #:", and a line is on the PO of the page it is printed on (usually one PO per invoice, but an
+        // invoice that carries items for more than one order is then matched to each of its POs). A page without a PO uses the one before.
+        let last = null, pagePo = inv.po
+        const pos = []
+        for (const page of group) {
+          pagePo = (page.text.match(/PO #:\s*(\d{4,})/) || [])[1] || pagePo
+          if (pagePo && !pos.includes(pagePo)) pos.push(pagePo)
+          for (const line of page.lines) {
+            const c = cellsOf(line, COL)
+            const cust = (c.item || '').match(/^Cust Item#:\s*(.*)$/)
+            if (cust && last) { last.our_code = cust[1].trim(); continue }
+            if (/^\d{1,3}$/.test(c.no || '') && c.item && /^\$/.test(c.total || '')) {
+              last = addLine(inv, { po: pagePo, code: c.item, desc: c.desc || '', qty: usNum(c.qty), price: usNum(c.unit), total: usNum(c.total) })
+            }
           }
         }
+        if (pos.length) inv.po = pos.join(', ')
+        if (pos.length > 1) inv.notes.push(`This invoice has items for more than one PO (${pos.join(', ')}): each line is on the PO printed on its page.`)
         out.push(verify(inv))
       }
       return out
@@ -2998,7 +3016,7 @@
   let shipOptionsCache = { at: 0, rows: [] }
   async function shipmentOptions(force = false) {
     if (!force && Date.now() - shipOptionsCache.at < 20000) return shipOptionsCache.rows
-    const { data, error } = await supabase.from('shipments').select('id, created_at, name, status, suppliers, invoice_nos').order('created_at', { ascending: false }).limit(100)
+    const { data, error } = await supabase.from('shipments').select('id, created_at, name, status, suppliers, invoice_nos, pos, invoice_list').order('created_at', { ascending: false }).limit(100)
     if (error) throw new Error(error.message)
     shipOptionsCache = { at: Date.now(), rows: data }
     return data
@@ -3010,6 +3028,44 @@
       : visibleShipments(shipOptionsCache.rows, currentId)
     const opts = rows.map(s => `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${esc(shipName(s))}${s.status === 'received' ? ' (completed)' : ''}</option>`).join('')
     return `<label class="picker"><span>Shipment</span><select id="shipPick" aria-label="Choose shipment">${opts}</select></label>`
+  }
+  // What a shipment search looks at: its name, suppliers, invoice numbers and PO numbers (from MYOB and the ones named on the invoices).
+  const shipHay = s => [shipName(s), ...(s.suppliers || []), ...(s.invoice_nos || []), ...(s.invoice_list || []).map(i => i.invoice_no), ...shipPOs(s)].join(' ')
+  // Case does not matter and spacing and punctuation are ignored; every word typed must be found; part of a number is enough.
+  const shipMatches = (hay, norm, q) => q.toLowerCase().split(/\s+/).filter(Boolean).every(t => hay.includes(t) || (normCode(t) && norm.includes(normCode(t))))
+  const findShipHtml = () => `<div class="shipfind"><input id="shipFind" type="search" placeholder="Find a shipment: PO, invoice, supplier" autocomplete="off" aria-label="Find a shipment"><div id="shipFindResults" class="shipfind-results" hidden></div></div>`
+  // The find box in the title bar of a screen (base = edit, reconcile, count...): type, and the matching shipments are listed under it.
+  function wireShipFind(base) {
+    const input = $('shipFind'), box = $('shipFindResults'); if (!input) return
+    const rows = shipOptionsCache.rows.filter(s => base === 'count' ? s.status === 'open' : s.status !== 'received')   // completed shipments are in Completed Shipments
+    const index = rows.map(s => { const h = shipHay(s); return { s, hay: h.toLowerCase(), norm: normCode(h) } })
+    let hits = []
+    const open = id => { location.hash = `#/${base}/${id}` }
+    const draw = () => {
+      const q = input.value.trim()
+      hits = q ? index.filter(x => shipMatches(x.hay, x.norm, q)).map(x => x.s) : []
+      box.hidden = !q
+      box.innerHTML = hits.length
+        ? hits.slice(0, 8).map(s => `<button type="button" class="shipfind-item" data-id="${s.id}"><strong>${esc(shipName(s))}</strong><span>${esc([...(s.suppliers || []).slice(0, 2), shipPOs(s).length ? `PO ${shipPOs(s).slice(0, 3).join(', ')}` : ''].filter(Boolean).join(' · '))}</span></button>`).join('') + (hits.length > 8 ? `<div class="shipfind-more">${hits.length - 8} more: type more of the PO or invoice number.</div>` : '')
+        : q ? `<div class="shipfind-more">No shipment matches "${esc(q)}".</div>` : ''
+    }
+    input.addEventListener('input', draw)
+    input.addEventListener('focus', () => { input.select(); if (input.value.trim()) draw() })
+    input.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') { ev.preventDefault(); if (hits.length === 1) open(hits[0].id); else if (hits.length) box.querySelector('.shipfind-item')?.focus() }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); box.querySelector('.shipfind-item')?.focus() }
+      else if (ev.key === 'Escape') { input.value = ''; draw() }
+    })
+    box.addEventListener('click', ev => { const b = ev.target.closest('.shipfind-item'); if (b) open(b.dataset.id) })
+    box.addEventListener('keydown', ev => {
+      const items = [...box.querySelectorAll('.shipfind-item')], i = items.indexOf(document.activeElement)
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); items[Math.min(i + 1, items.length - 1)]?.focus() }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (i <= 0) input.focus(); else items[i - 1].focus() }
+      else if (ev.key === 'Escape') { input.focus() }
+    })
+    if (window.__shipFindAway) document.removeEventListener('click', window.__shipFindAway)
+    window.__shipFindAway = ev => { if (!ev.target.closest('.shipfind')) box.hidden = true }
+    document.addEventListener('click', window.__shipFindAway)
   }
   function wirePicker(base) { const el = $('shipPick'); if (el) el.onchange = () => { location.hash = `#/${base}/${el.value}` } }
 
@@ -3023,10 +3079,21 @@
       if (!rows.length) { content.innerHTML = me.is_manager
         ? `<div class="empty-state">No shipments yet. <a href="#/invoices">Add invoices in Invoice Creation</a>.</div>`
         : `<div class="empty-state">No shipments to count right now. The office adds shipments here once their invoices are ready.</div>`; return }
-      content.innerHTML = `<div class="table-card"><table class="grid">
+      content.innerHTML = `<div class="search-row"><input id="chooserSearch" type="search" placeholder="Search shipments by PO number, invoice number or supplier" autocomplete="off" aria-label="Search shipments"><span class="muted" id="chooserN"></span></div>
+        <div class="table-card"><table class="grid">
         <thead><tr><th>Shipment</th><th>Invoices</th><th>Created</th><th>Status</th></tr></thead>
-        <tbody>${rows.map(s => `<tr><td><a href="#/${base}/${s.id}"><strong>${esc(shipName(s))}</strong></a></td><td>${esc((s.invoice_nos || []).join(', '))}</td><td>${esc(fmtWhen(s.created_at))}</td><td>${statusTag(s.status)}</td></tr>`).join('')}</tbody>
+        <tbody>${rows.map(s => `<tr data-hay="${esc(shipHay(s).toLowerCase())}" data-norm="${esc(normCode(shipHay(s)))}"><td><a href="#/${base}/${s.id}"><strong>${esc(shipName(s))}</strong></a></td><td>${esc((s.invoice_nos || []).join(', '))}</td><td>${esc(fmtWhen(s.created_at))}</td><td>${statusTag(s.status)}</td></tr>`).join('')}</tbody>
       </table></div>`
+      const trs = [...content.querySelectorAll('tbody tr')]
+      const filter = () => {
+        const q = $('chooserSearch').value.trim(), hit = trs.filter(r => !q || shipMatches(r.dataset.hay, r.dataset.norm, q))
+        trs.forEach(r => { r.hidden = !hit.includes(r) })
+        $('chooserN').textContent = q ? `${hit.length} of ${trs.length} shipment${trs.length === 1 ? '' : 's'}${hit.length === 1 ? ' · press Enter to open it' : ''}` : ''
+        return hit
+      }
+      $('chooserSearch').addEventListener('input', filter)
+      $('chooserSearch').addEventListener('keydown', ev => { if (ev.key === 'Enter') { const hit = filter(); if (hit.length === 1) location.hash = hit[0].querySelector('a').getAttribute('href').slice(1) } else if (ev.key === 'Escape') { $('chooserSearch').value = ''; filter() } })
+      $('chooserSearch').focus()
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
@@ -3242,7 +3309,11 @@
       </div>
       <div class="section-title-row"><h2>Shipments</h2><span class="muted" id="opMsg"></span></div>
       <div id="opNote"></div>
+      <div class="search-row"><input id="shipSearch" type="search" placeholder="Search shipments by PO number, invoice number or supplier" autocomplete="off" aria-label="Search shipments"><span class="muted" id="shipSearchN"></span></div>
       <div id="shipmentList"><div class="empty-state">Loading shipments…</div></div>`
+    $('shipSearch').value = shipSearchText
+    $('shipSearch').addEventListener('input', ev => { shipSearchText = ev.target.value; applyShipSearch() })
+    $('shipSearch').addEventListener('keydown', ev => { if (ev.key === 'Escape') { $('shipSearch').value = ''; shipSearchText = ''; applyShipSearch() } })
     const drop = $('drop'), input = $('fileInput')
     input.onchange = () => { addFiles(input.files); input.value = '' }
     ;['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over') }))
@@ -3291,9 +3362,22 @@
       }
       const open = data.filter(s => s.status !== 'received')   // completed shipments are in Completed Shipments, not here
       box.innerHTML = open.length ? open.map(shipCardHtml).join('') : `<div class="empty-state">No open shipments. Add invoices above to start one.</div>`
+      applyShipSearch()
     } catch (e) { box.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
+  // The search over the open shipments in Invoice Creation. It is kept (and applied again) whenever the list is redrawn.
+  let shipSearchText = ''
+  function applyShipSearch() {
+    const box = $('shipmentList'), n = $('shipSearchN'); if (!box || !n) return
+    const q = shipSearchText.trim(), cards = [...box.querySelectorAll('.ship-card')]
+    const hit = cards.filter(c => !q || shipMatches(c.dataset.hay || '', c.dataset.norm || '', q))
+    cards.forEach(c => { c.hidden = !hit.includes(c) })
+    n.textContent = q && cards.length ? `${hit.length} of ${cards.length} shipment${cards.length === 1 ? '' : 's'}` : ''
+    let none = box.querySelector('.search-none')
+    if (q && cards.length && !hit.length) { if (!none) { none = document.createElement('div'); none.className = 'empty-state search-none'; box.appendChild(none) } none.textContent = `No shipment matches "${q}".` }
+    else if (none) none.remove()
+  }
   function shipCardHtml(s) {
     const sm = s.summary || {}
     const toCheck = (sm.not_on_po || 0) + (sm.over || 0)
@@ -3306,7 +3390,8 @@
         <td class="act">${s.status === 'received' ? '' : `<select class="move-sel" data-id="${s.id}" data-key="${esc(i.key)}" aria-label="Move invoice ${esc(i.invoice_no)} to another shipment"><option value="">Move to…</option><option value="new">A new shipment</option>${moveOpts.map(o => `<option value="${o.id}">${esc(shipName(o))}</option>`).join('')}</select>
           <button class="link-btn danger" data-act="remove" data-id="${s.id}" data-key="${esc(i.key)}">Remove</button>`}</td></tr>`).join('')
       : `<tr><td colspan="8" class="muted">No invoices in this shipment.</td></tr>`
-    return `<div class="ship-card" data-id="${s.id}">
+    const hay = shipHay(s)
+    return `<div class="ship-card" data-id="${s.id}" data-hay="${esc(hay.toLowerCase())}" data-norm="${esc(normCode(hay))}">
       <div class="ship-head">
         <div class="ship-title"><span class="ship-name">${esc(shipName(s))}</span>
           <button class="link-btn" data-act="rename" data-id="${s.id}">Rename</button> ${statusTag(s.status)}</div>
@@ -3733,9 +3818,9 @@
     const nNeeds = rows.filter(needsCode).length, nManual = rows.filter(isManual).length, nChanged = rows.filter(isChanged).length, nCheck = rows.filter(toCheck).length
     const note = editMsg; editMsg = null
     setTop(shipName(sh), `Shipment Edit · ${plural((sh.invoices || []).length, 'invoice')}`,
-      `${pickerHtml(sh.id, 'edit')}
+      `${findShipHtml()}${pickerHtml(sh.id, 'edit')}
        <a class="btn" href="#/count/${sh.id}">Shipment Count →</a>`)
-    wirePicker('edit')
+    wirePicker('edit'); wireShipFind('edit')
     if (editFilter === 'check' && !nCheck) editFilter = nNeeds ? 'needs' : nManual ? 'manual' : nChanged ? 'changed' : 'all'
     if (editFilter === 'needs' && !nNeeds) editFilter = nCheck ? 'check' : nManual ? 'manual' : nChanged ? 'changed' : 'all'
     const chip = (f, label, n, issue) => `<button class="chip ${issue && n ? 'issue' : ''}" data-f="${f}" aria-pressed="${editFilter === f}">${label}<b>${n}</b></button>`
@@ -3908,7 +3993,7 @@
       ? `<strong>${esc(db.stock_code)}</strong><span class="flag" style="color:var(--warn)">Not on a loaded PO</span>`
       : '<span class="flag" style="display:inline">Not on any loaded PO</span>' + elsewhereHint(r)
     else if (ln.is_freight && !(db.pos || []).length) matched = `<strong>${esc(db.stock_code)}</strong><span class="sub" style="display:block;color:var(--navy);font-size:12px;font-weight:600">Freight charge</span>`
-    else matched = (db.status === 'over' ? `<span class="check-flag">${esc(overText(r))}</span>` : '') + `<strong>${esc(db.stock_code)}</strong><span class="sub" style="display:block;color:var(--slate-dim);font-size:12px">PO ${esc((db.pos || []).map(p => p[0]).join(', '))}${db.bin ? ' · ' + esc(db.bin) : ''}</span>`
+    else matched = (db.status === 'over' ? `<span class="check-flag">${esc(overText(r))}</span>` : '') + poStoryHtml(r) + `<strong>${esc(db.stock_code)}</strong><span class="sub" style="display:block;color:var(--slate-dim);font-size:12px">PO ${esc((db.pos || []).map(p => p[0]).join(', '))}${db.bin ? ' · ' + esc(db.bin) : ''}</span>`
     return `<tr class="${needs ? 'not_on_po' : ''} ${check ? 'to-check' : ''}" data-inv="${esc(invKey(inv))}" data-idx="${idx}" data-tags="${tag}">
       <td class="partno"><input type="text" maxlength="40" value="${esc(ln.code)}" aria-label="Part number" autocomplete="off">
         ${ln.added ? `<span class="sub"><span class="edit-tag">Added</span><button class="link-btn danger" data-act="remove-added">Remove</button></span>`
@@ -3946,6 +4031,24 @@
 
   // ---- find the unmatched lines on OTHER open POs (the invoice names one PO, but lines are sometimes on another) ----
   const rowKey = r => `${invKey(r.inv)}|${r.idx}`
+  // Says where a line's quantity came from when that is not simply "the PO the invoice names": taken from a different PO (and whether that
+  // PO was added in Shipment Edit), and, for a line that is more than is on order, what is still on order in MYOB for the part on each PO.
+  function poStoryHtml(r) {
+    const { inv, ln, db } = r
+    if (!db || !(db.pos || []).length) return ''
+    const stated = String(ln.po || inv.po || '').match(/\d{4,}/g) || []
+    const used = [...new Set(db.pos.map(p => String(p[0])))]
+    const strays = stated.length ? used.filter(p => !stated.includes(p)) : []
+    const addedHere = new Set((editState.shipment.files || []).filter(f => f.kind === 'myob' && /added in Shipment Edit/.test(f.summary || '')).map(f => ((f.summary || '').match(/^PO (\d+)/) || [])[1]))
+    const out = []
+    if (strays.length) out.push(`The invoice names PO ${stated.join(', ')}, but this quantity was taken from PO ${strays.map(p => `${p}${addedHere.has(p) ? ' (added in Shipment Edit)' : ''}`).join(', ')}.`)
+    if (db.status === 'over') {
+      const by = new Map()
+      for (const l of editState.shipment.po_lines || []) if (normCode(l.stock_code) === normCode(db.stock_code)) by.set(l.po, (by.get(l.po) || 0) + (+l.qty || 0))
+      out.push(`Still on order in MYOB: ${by.size ? [...by].map(([po, q]) => `PO ${po} ${fmtQty(q)}`).join(', ') : 'nothing loaded'}.`)
+    }
+    return out.map(t => `<span class="sub why">${esc(t)}</span>`).join('')
+  }
   function elsewhereHint(r) {
     const f = editState.elsewhere && editState.elsewhere.found.get(rowKey(r))
     if (!f) return ''
