@@ -361,6 +361,26 @@
   td.recv-edit input.failed { border-color: var(--err); }
   td.recv-edit input:disabled { background: transparent; border-color: transparent; }
   .ship-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+  .dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 8px; }
+  .dash-tile { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .dash-label { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--slate-dim); }
+  .dash-value { font-size: 34px; font-weight: 800; color: var(--navy); line-height: 1.15; margin-top: 2px; }
+  .dash-sub { font-size: 13px; color: var(--slate); margin-top: 4px; }
+  .bar { height: 10px; background: #E3E8F0; border-radius: 99px; overflow: hidden; min-width: 90px; flex: 1; }
+  .bar-fill { height: 100%; background: var(--navy); border-radius: 99px; transition: width .3s; }
+  .bar-fill.full { background: var(--ok); }
+  .bar-row { display: flex; align-items: center; gap: 10px; }
+  .bar-row strong { min-width: 42px; text-align: right; }
+  .dash-barcol { min-width: 190px; }
+  .dash-table td { vertical-align: middle; }
+  .dash-prio { width: 46px; }
+  tr.dash-row { cursor: pointer; }
+  tr.dash-row:hover td { background: #F4F7FB; }
+  .dash-flag { display: inline-block; padding: 1px 8px; border-radius: 99px; background: #EEF1F6; color: var(--slate); font-size: 12px; font-weight: 600; }
+  .prio-badge.sm { min-width: 28px; height: 28px; margin: 0; font-size: 14px; }
+  .arrived { display: inline-flex; align-items: center; gap: 8px; margin-right: 14px; padding: 7px 12px; border: 2px solid var(--border); border-radius: 10px; font-weight: 700; font-size: 14px; color: var(--slate); background: #fff; cursor: pointer; user-select: none; }
+  .arrived input { width: 20px; height: 20px; margin: 0; accent-color: var(--ok); cursor: pointer; }
+  .arrived.yes { border-color: var(--ok); color: var(--ok); background: var(--ok-tint); }
   .prio { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; margin-right: 14px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--slate-dim); cursor: text; }
   .prio-input { width: 58px; padding: 8px 6px; text-align: center; font-size: 20px; font-weight: 800; color: var(--navy); border: 2px solid var(--border); border-radius: 10px; background: #fff; }
   .prio-input:focus { outline: none; border-color: var(--navy); }
@@ -2353,11 +2373,13 @@
   // ============================================================
   const JAK_A = colsOf(['part', 100], ['cust', 180], ['desc', 360], ['qty', 420], ['bo', 445], ['price', 520], ['amt', Infinity])
   const JAK_B = colsOf(['part', 110], ['desc', 315], ['qty', 345], ['bo', 390], ['disc', 455], ['price', 525], ['amt', Infinity])
+  // the "Tax Invoice" layout (Jak Max, Australian dollars): Part #, Description, Qty, B/O, Disc, Price, Gross, Net; the Net column is the line amount
+  const JAK_C = colsOf(['part', 105], ['desc', 290], ['qty', 335], ['bo', 365], ['disc', 405], ['price', 455], ['gross', 530], ['amt', Infinity])
   const JAKMAX = {
     name: 'Jak Max', short: 'Jakmax',
-    detect: t => /Export Invoice/i.test(t) && /Foleys Rd/i.test(t),
+    detect: t => (/Export Invoice/i.test(t) && /Foleys Rd/i.test(t)) || (/Tax Invoice/i.test(t) && /Foleys Road/i.test(t) && /jakmax/i.test(t)),
     parse(pages, source) {
-      const p1 = pages[0], A = /Customer P\/N/.test(p1.text), COL = A ? JAK_A : JAK_B
+      const p1 = pages[0], A = /Customer P\/N/.test(p1.text), T = !A && /Tax Invoice #/.test(p1.text) && /\bGross\b/.test(p1.text), COL = A ? JAK_A : T ? JAK_C : JAK_B
       const lbl = re => (p1.text.match(re) || [])[1] || ''
       let po, invoice_no, date, due, cur, billTo = lbl(/Bill To\s*\n?\s*(CAMA PRODUCTS[^\n]*)/)
       if (A) { invoice_no = lbl(/Invoice #\s*(I\d+)/); date = lbl(/^Date\s+([\d/]+)/m); po = lbl(/P\.O\. No\.\s*(\d{4,})/); due = lbl(/Due Date\s+([\d/]+)/); cur = lbl(/Currency\s+([A-Za-z ]+?)\s*$/m) }
@@ -2370,19 +2392,22 @@
         supplier: usd ? 'Jakmax Archer' : 'Jakmax', po, invoice_no, invoice_date: parseDate(date), due_date: parseDate(due), currency: usd ? 'USD' : 'AUD',
         invoice_total: null, lines: [], notes: [], source,
       }
-      let last = null, skipped = 0
+      let last = null, skipped = 0, gst = 0
       for (const page of pages) {
         let inTable = false
         for (const line of page.lines) {
-        if (/Invoice Total/.test(line.text) && isNum(lastItem(line).replace('$', ''))) { inv.invoice_total = usNum(lastItem(line)); continue }
-        if (/Part Number/.test(line.text) && /Amount/.test(line.text)) { inTable = true; continue }
+        if (/Invoice Total|Total Inc GST/.test(line.text) && isNum(lastItem(line).replace('$', ''))) { inv.invoice_total = usNum(lastItem(line)); continue }
+        if (T && /^GST\b/.test(line.text) && isNum(lastItem(line).replace('$', ''))) { gst = usNum(lastItem(line)) || 0; continue }
+        if (T ? (/Part #/.test(line.text) && /\bNet\b/.test(line.text)) : (/Part Number/.test(line.text) && /Amount/.test(line.text))) { inTable = true; continue }
         if (!inTable) continue
         const c = cellsOf(line, COL)
         if (/^(Customer Notes|Notes)$/.test(c.part || '')) { inTable = false; continue }
         const qty = usNum(c.qty), amt = usNum(c.amt)
         if (c.part && qty !== null && amt !== null && !/Part Number|Total/.test(c.part)) {
           if (!qty) { skipped++; last = null; continue }
-          last = addLine(inv, { code: c.part, our_code: c.cust || '', desc: c.desc || '', qty, price: usNum(c.price), total: amt })
+          // Tax Invoice layout: when the Net differs from the Gross a discount was taken, so the price is the net price
+          const gross = T ? usNum(c.gross) : null
+          last = addLine(inv, { code: c.part, our_code: c.cust || '', desc: c.desc || '', qty, price: T && gross !== null && Math.abs(amt - gross) > 0.005 ? Math.round(amt / qty * 10000) / 10000 : usNum(c.price), total: amt })
         } else if (!c.part && c.desc && last && qty === null && amt === null) {
           const br = c.desc.match(/^\(([A-Z0-9][A-Z0-9-]{3,})\)$/)
           if (br) last.alt_codes.push(br[1]); else appendDesc(last, c.desc)
@@ -2390,7 +2415,7 @@
         }
       }
       if (skipped) inv.notes.push(`${skipped} line${skipped === 1 ? '' : 's'} with nothing supplied (all on back order) ${skipped === 1 ? 'was' : 'were'} left out.`)
-      return [verify(inv)]
+      return [verify(inv, { extra: gst, extraLabel: 'GST' })]
     },
   }
   
@@ -2865,6 +2890,7 @@
       <div class="sidebar-logo"><img src="${LOGO_DATA_URI}" alt="CAMA"><div class="sidebar-wordmark">RECEIVING</div></div>
       <div class="sidebar-user"><strong>${esc(me.name)}</strong>${me.is_manager ? 'Manager' : 'Staff'}</div>
       <div class="nav">
+        ${link('dashboard', 'Dashboard', 'dashboard')}
         ${me.is_manager ? link('invoices', 'Invoice Creation', 'invoices') + link('edit', 'Shipment Edit', 'edit') + link('purchasing', 'Purchasing Information', 'purchasing') : ''}
         ${link('count', 'Shipment Count', 'count')}
         ${me.is_manager ? link('reconcile', 'Shipment Reconciliation', 'reconcile') + link('completed', 'Completed Shipments', 'completed') : ''}
@@ -2877,7 +2903,7 @@
     topbarTitle.textContent = title
     topbarSubtitle.textContent = subtitle
     const q = lastShipmentId ? '/' + lastShipmentId : ''
-    topbarRight.innerHTML = rightHtml + (!me.is_manager ? `<span class="mobile-nav"><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/labels">Labels</a></span>` : `<span class="mobile-nav"><a class="btn ghost" href="#/invoices">Invoices</a><a class="btn ghost" href="#/edit${q}">Edit</a><a class="btn ghost" href="#/purchasing">Purchasing</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/reconcile">Reconcile</a><a class="btn ghost" href="#/labels">Labels</a></span>`)
+    topbarRight.innerHTML = rightHtml + (!me.is_manager ? `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/labels">Labels</a></span>` : `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/invoices">Invoices</a><a class="btn ghost" href="#/edit${q}">Edit</a><a class="btn ghost" href="#/purchasing">Purchasing</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/reconcile">Reconcile</a><a class="btn ghost" href="#/labels">Labels</a></span>`)
   }
 
   // Staff who are not managers only see Shipment Count. This hides the other tabs in the app. On its own it is
@@ -2885,8 +2911,10 @@
   // (see SETUP.md, "Who can do what").
   function route() {
     content.onclick = null   // set by the Shipment Reconciliation list only
+    content.onkeydown = null
+    if (dashTimer) { clearInterval(dashTimer); dashTimer = null }   // the Dashboard refreshes itself while it is open
     const h = location.hash || (me.is_manager ? '#/invoices' : '#/count')
-    if (!me.is_manager && !/^#\/(count|labels)(\/|\?|$)/.test(h)) {
+    if (!me.is_manager && !/^#\/(count|labels|dashboard)(\/|\?|$)/.test(h)) {
       const m2 = h.match(/^#\/(?:shipment|edit|reconcile)\/([0-9a-f-]{36})$/)
       location.replace(m2 ? `#/count/${m2[1]}` : '#/count'); return
     }
@@ -2903,6 +2931,7 @@
     if ((m = h.match(/^#\/reconcile\/([0-9a-f-]{36})$/))) return showReconcile(m[1])
     if (h === '#/reconcile') return showReconcileList()
     if (h === '#/completed') return showCompleted()
+    if (h === '#/dashboard') return showDashboard()
     return showInvoices()
   }
   window.addEventListener('hashchange', () => { if (appShell.style.display !== 'none') route() })
@@ -3496,6 +3525,7 @@
     const status = ship.status === 'counted' && goods.some(i => !i.old) ? 'open' : (ship.status || 'open')
     if (ship.summary && ship.summary.completed_at) { summary.completed_at = ship.summary.completed_at; summary.completed_by = ship.summary.completed_by }
     if (ship.summary && ship.summary.priority) summary.priority = ship.summary.priority   // the Count list priority survives a re-match
+    if (ship.summary && ship.summary.arrived) { summary.arrived = true; summary.arrived_at = ship.summary.arrived_at; summary.arrived_by = ship.summary.arrived_by }
     const name = (ship.name && ship.name.trim()) || autoName(summary.suppliers)
     const { error: shErr } = await supabase.from('shipments').update({
       name, status, suppliers: summary.suppliers, invoice_nos: summary.invoices, pos: summary.pos, summary, invoices,
@@ -4997,9 +5027,9 @@
     const toCheck = (sm.not_on_po || 0) + (sm.over || 0)
     const href = `#/${base}/${s.id}`
     const hay = [shipName(s), ...(s.suppliers || []), ...(s.invoice_nos || []), ...invs.map(i => i.invoice_no), ...shipPOs(s)].join(' ')
-    return `<div class="ship-card clickable" data-href="${href}" data-hay="${esc(hay.toLowerCase())}" data-norm="${esc(normCode(hay))}">
+    return `<div class="ship-card clickable ${isCount && sm.arrived ? 'arrived-card' : ''}" data-href="${href}" data-hay="${esc(hay.toLowerCase())}" data-norm="${esc(normCode(hay))}">
       <div class="ship-head">
-        <div class="ship-title">${isCount ? priorityBoxHtml(s) : ''}<a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}</div>
+        <div class="ship-title">${isCount ? priorityBoxHtml(s) : ''}${isCount ? arrivedBoxHtml(s) : ''}<a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}</div>
         <div class="ship-actions"><a class="btn" href="${href}">${isCount ? 'Count' : isPurch ? 'View outstanding' : 'Reconcile'} →</a></div>
       </div>
       <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${isPurch ? ` · ${plural(sm.still_open || 0, 'line')} still outstanding` : money && toCheck ? ` · ${toCheck} to check` : ''}</div>
@@ -5010,7 +5040,7 @@
   }
   function wireCardClicks() {
     content.onclick = ev => {
-      if (ev.target.closest('a, button, select, input, summary')) return
+      if (ev.target.closest('a, button, select, input, summary, label')) return
       const card = ev.target.closest('.ship-card.clickable')
       if (card) location.hash = card.dataset.href.slice(1)
     }
@@ -5025,8 +5055,26 @@
   // Managers set the numbers; warehouse staff see them.
   let countData = [], countSearchText = ''
   const prioOf = s => { const n = +((s.summary || {}).priority); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0 }
-  const countOrder = (x, y) => { const px = prioOf(x), py = prioOf(y); return (px && py) ? px - py : px ? -1 : py ? 1 : String(x.created_at).localeCompare(String(y.created_at)) }
+  const arrivedOf = s => !!(s.summary || {}).arrived
+  // arrived shipments first, then the ones still to arrive; in each, numbered ones by number, then the rest by when they were added
+  const countOrder = (x, y) => { const ax = arrivedOf(x), ay = arrivedOf(y); if (ax !== ay) return ax ? -1 : 1; const px = prioOf(x), py = prioOf(y); return (px && py) ? px - py : px ? -1 : py ? 1 : String(x.created_at).localeCompare(String(y.created_at)) }
   const withPriority = (s, p) => { const sm = { ...(s.summary || {}) }; if (p) sm.priority = p; else delete sm.priority; return sm }
+  // Has the shipment arrived? Anyone can tick it. It is kept in the shipment's summary, with who ticked it and when.
+  function arrivedBoxHtml(s) {
+    const sm = s.summary || {}
+    return `<label class="arrived ${sm.arrived ? 'yes' : ''}" title="${sm.arrived ? `Arrived${sm.arrived_at ? ` ${esc(fmtWhen(sm.arrived_at))}` : ''}${sm.arrived_by ? ` (ticked by ${esc(sm.arrived_by)})` : ''}` : 'Tick when the shipment has arrived'}"><input type="checkbox" class="arrived-input" data-id="${s.id}" ${sm.arrived ? 'checked' : ''}><span>Arrived</span></label>`
+  }
+  async function setArrived(id, yes) {
+    const s = countData.find(x => x.id === id); if (!s) return
+    const sm = { ...(s.summary || {}) }
+    delete sm.priority   // the numbers run within each section, so a shipment changing section starts unnumbered there
+    if (yes) { sm.arrived = true; sm.arrived_at = new Date().toISOString(); sm.arrived_by = me.name } else { delete sm.arrived; delete sm.arrived_at; delete sm.arrived_by }
+    const { error } = await supabase.from('shipments').update({ summary: sm }).eq('id', id)
+    if (error) { alert(`Couldn't save: ${friendlyDbError(error)}`); return renderCountList() }
+    s.summary = sm; shipOptionsCache.at = 0
+    await tidyPriorities(countData)   // the section it left closes up
+    renderCountList()
+  }
   function priorityBoxHtml(s) {
     const p = prioOf(s)
     return me.is_manager
@@ -5037,7 +5085,7 @@
   async function setPriority(id, raw) {
     const s = countData.find(x => x.id === id); if (!s) return
     const n = parseInt(raw, 10), want = Number.isFinite(n) && n >= 1 ? n : 0
-    const others = countData.filter(x => x.id !== id && prioOf(x)).sort(countOrder)
+    const others = countData.filter(x => x.id !== id && arrivedOf(x) === arrivedOf(s) && prioOf(x)).sort(countOrder)
     const list = want ? [...others.slice(0, Math.min(want, others.length + 1) - 1), s, ...others.slice(Math.min(want, others.length + 1) - 1)] : others
     const changes = list.map((x, i) => [x, i + 1]).filter(([x, p]) => prioOf(x) !== p)
     if (!want && prioOf(s)) changes.push([s, 0])
@@ -5051,8 +5099,7 @@
   }
   // after a shipment leaves the list the numbers close up (1, 2, 4 becomes 1, 2, 3)
   async function tidyPriorities(list) {
-    const numbered = list.filter(prioOf).sort(countOrder)
-    const changes = numbered.map((x, i) => [x, i + 1]).filter(([x, p]) => prioOf(x) !== p)
+    const changes = [true, false].flatMap(arr => list.filter(x => arrivedOf(x) === arr && prioOf(x)).sort(countOrder).map((x, i) => [x, i + 1])).filter(([x, p]) => prioOf(x) !== p)
     if (!changes.length) return
     await Promise.all(changes.map(([x, p]) => supabase.from('shipments').update({ summary: withPriority(x, p) }).eq('id', x.id)))
     for (const [x, p] of changes) x.summary = withPriority(x, p)
@@ -5072,7 +5119,10 @@
         <input id="countSearch" type="search" placeholder="Search shipments by PO number (or invoice number, supplier)" autocomplete="off" aria-label="Search shipments">
         <span class="muted" id="countSearchN"></span>
       </div>
-      <div id="countCards"><div class="group-title">To count: priority 1 first<span class="count">${data.length}</span></div>${data.map(s => listCardHtml(s, 'count')).join('')}</div>
+      <div id="countCards">${[[true, 'Arrived: ready to count'], [false, 'Not arrived yet']].map(([arr, title]) => {
+        const list = data.filter(s => arrivedOf(s) === arr)
+        return list.length ? `<div class="group-title" data-arrived="${arr}">${title}<span class="count">${list.length}</span></div>${list.map(s => listCardHtml(s, 'count')).join('')}` : ''
+      }).join('')}</div>
       <div class="empty-state" id="countNone" hidden></div>`
     wireCardClicks()
     // Type or scan a PO number (part of it is enough; invoice numbers and supplier names work too). Enter opens the shipment when only one is left.
@@ -5082,7 +5132,10 @@
       countSearchText = $('countSearch').value
       const hit = cards.filter(c => terms.every(t => c.dataset.hay.includes(t) || (normCode(t) && c.dataset.norm.includes(normCode(t)))))
       cards.forEach(c => { c.hidden = !hit.includes(c) })
-      const gt = content.querySelector('#countCards .group-title .count'); if (gt) gt.textContent = hit.length
+      content.querySelectorAll('#countCards .group-title').forEach(t => {   // each section shows how many are left, and goes if none are
+        const n = hit.filter(c => c.classList.contains('arrived-card') === (t.dataset.arrived === 'true')).length
+        t.querySelector('.count').textContent = n; t.hidden = !n
+      })
       $('countSearchN').textContent = terms.length ? `${hit.length} of ${cards.length} shipment${cards.length === 1 ? '' : 's'}${hit.length === 1 ? ' · press Enter to open it' : ''}` : ''
       $('countNone').hidden = hit.length > 0 || !terms.length
       $('countNone').textContent = `No shipment to count matches "${raw}".`
@@ -5096,6 +5149,7 @@
     })
     $('countSearch').addEventListener('focus', () => $('countSearch').select())
     // the priority numbers: type a number and press Enter (or click away) and the shipment moves to that place
+    content.querySelectorAll('.arrived-input').forEach(inp => inp.addEventListener('change', () => setArrived(inp.dataset.id, inp.checked)))
     content.querySelectorAll('.prio-input').forEach(inp => {
       inp.addEventListener('change', () => setPriority(inp.dataset.id, inp.value))
       inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); inp.blur() } })
@@ -5114,6 +5168,77 @@
       await tidyPriorities(countData)
       renderCountList()
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
+  }
+
+  // ============================================================
+  // DASHBOARD: where the open shipments are. Arrived, yet to arrive, counting started and how far along each count is.
+  // Percent done = lines counted / lines to count (freight lines and back orders are not counted). Refreshes itself every minute.
+  // ============================================================
+  let dashTimer = null
+  async function showDashboard() {
+    renderSidebar('dashboard')
+    setTop('Dashboard', 'Where the shipments are', '<button class="btn ghost" id="dashRefresh" type="button">Refresh</button>')
+    content.innerHTML = `<div class="empty-state">Loading…</div>`
+    await loadDashboard()
+    dashTimer = setInterval(() => { if (location.hash === '#/dashboard') loadDashboard() }, 60000)
+  }
+  async function loadDashboard() {
+    try {
+      const all = await loadShipmentCards()
+      shipOptionsCache = { at: Date.now(), rows: all }
+      const open = all.filter(s => s.status === 'open')
+      const waiting = all.filter(s => s.status === 'counted')
+      const rows = open.length ? await fetchAll((x, y) => supabase.from('shipment_lines').select('shipment_id, received, inv_qty, flags, counted_at').in('shipment_id', open.map(s => s.id)).order('id').range(x, y)) : []
+      const stat = new Map(open.map(s => [s.id, { total: 0, counted: 0, last: '' }]))
+      for (const l of rows) {
+        if (isFreightFlags(l.flags) || !(+l.inv_qty > 0)) continue
+        const st = stat.get(l.shipment_id); if (!st) continue
+        st.total++
+        if (l.received !== null && l.received !== undefined) { st.counted++; if (l.counted_at && l.counted_at > st.last) st.last = l.counted_at }
+      }
+      renderDashboard(open, waiting, stat)
+    } catch (e) { if (location.hash === '#/dashboard') content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
+  }
+  function renderDashboard(open, waiting, stat) {
+    if (location.hash !== '#/dashboard') return
+    const pct = st => st.total ? Math.round(st.counted / st.total * 100) : 0
+    const sorted = [...open].sort(countOrder)
+    const started = sorted.filter(s => stat.get(s.id).counted > 0)
+    const arrivedIdle = sorted.filter(s => arrivedOf(s) && stat.get(s.id).counted === 0)
+    const toArrive = sorted.filter(s => !arrivedOf(s) && stat.get(s.id).counted === 0)
+    const sumCounted = started.reduce((t, s) => t + stat.get(s.id).counted, 0), sumTotal = started.reduce((t, s) => t + stat.get(s.id).total, 0)
+    const overall = sumTotal ? Math.round(sumCounted / sumTotal * 100) : 0
+    const tile = (label, value, sub = '', href = '') => `<div class="dash-tile"><div class="dash-label">${label}</div><div class="dash-value">${value}</div>${sub ? `<div class="dash-sub">${sub}</div>` : ''}</div>`
+    const pr = s => prioOf(s) ? `<span class="prio-badge sm">${prioOf(s)}</span>` : ''
+    const who = s => esc((s.suppliers || []).join(', '))
+    const pos = s => esc(clipList(shipPOs(s), 3))
+    const tr = (s, cells) => `<tr class="dash-row" data-href="#/count/${s.id}" tabindex="0"><td class="dash-prio">${pr(s)}</td><td><strong>${esc(shipName(s))}</strong></td>${cells}</tr>`
+    const table = (head, body, empty) => body ? `<div class="table-card"><table class="grid dash-table"><thead><tr><th></th><th>Shipment</th>${head}</tr></thead><tbody>${body}</tbody></table></div>` : `<div class="empty-state">${empty}</div>`
+    const updated = new Date().toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit' })
+    content.innerHTML = `
+      <div class="dash-tiles">
+        ${tile('Open shipments', open.length, waiting.length ? `${plural(waiting.length, 'more shipment')} counted, waiting for reconciliation` : '')}
+        ${tile('Arrived', open.filter(s => arrivedOf(s) || stat.get(s.id).counted > 0).length, 'ticked as arrived, or counting has started')}
+        ${tile('Yet to arrive', open.filter(s => !arrivedOf(s) && stat.get(s.id).counted === 0).length, 'not ticked as arrived')}
+        ${tile('Counting started', started.length, started.length ? `${sumCounted} of ${sumTotal} lines counted` : 'no counts started')}
+        ${tile('Done, of those started', `${overall}%`, started.length ? `<div class="bar"><div class="bar-fill" style="width:${overall}%"></div></div>` : 'nothing started')}
+      </div>
+      <div class="group-title">Counting started<span class="count">${started.length}</span></div>
+      ${table('<th>Supplier</th><th>PO</th><th class="num">Counted</th><th class="dash-barcol">Done</th><th>Last counted</th>',
+        started.map(s => { const st = stat.get(s.id), p = pct(st); return tr(s, `<td>${who(s)}</td><td>${pos(s)}</td><td class="num">${st.counted} of ${st.total} lines</td><td class="dash-barcol"><div class="bar-row"><div class="bar"><div class="bar-fill ${p === 100 ? 'full' : ''}" style="width:${p}%"></div></div><strong>${p}%</strong></div></td><td>${st.last ? esc(fmtWhen(st.last)) : ''}${arrivedOf(s) ? '' : ' <span class="dash-flag">not ticked as arrived</span>'}</td>`) }).join(''),
+        'No shipment has been started yet. A count starts when the first quantity is entered in Shipment Count.')}
+      <div class="group-title">Arrived, not started<span class="count">${arrivedIdle.length}</span></div>
+      ${table('<th>Supplier</th><th>PO</th><th class="num">Lines</th><th>Arrived</th>',
+        arrivedIdle.map(s => { const st = stat.get(s.id), sm = s.summary || {}; return tr(s, `<td>${who(s)}</td><td>${pos(s)}</td><td class="num">${st.total}</td><td>${sm.arrived_at ? esc(fmtWhen(sm.arrived_at)) : ''}${sm.arrived_by ? ` <span class="dash-flag">${esc(sm.arrived_by)}</span>` : ''}</td>`) }).join(''),
+        'Every arrived shipment has been started.')}
+      <div class="group-title">Yet to arrive<span class="count">${toArrive.length}</span></div>
+      ${table('<th>Supplier</th><th>PO</th><th class="num">Lines</th><th>Added</th>',
+        toArrive.map(s => { const st = stat.get(s.id); return tr(s, `<td>${who(s)}</td><td>${pos(s)}</td><td class="num">${st.total}</td><td>${esc(fmtWhen(s.created_at))}</td>`) }).join(''),
+        'Nothing is waiting to arrive.')}
+      <p class="muted" style="margin-top:16px">Updated ${esc(updated)}. This page refreshes itself every minute. Click a shipment to open it in Shipment Count.</p>`
+    content.onclick = ev => { const r = ev.target.closest('tr.dash-row'); if (r) location.hash = r.dataset.href.slice(1) }
+    content.onkeydown = ev => { if (ev.key === 'Enter' && ev.target.matches('tr.dash-row')) location.hash = ev.target.dataset.href.slice(1) }
+    if ($('dashRefresh')) $('dashRefresh').onclick = () => loadDashboard()
   }
 
   async function showReconcileList() {
