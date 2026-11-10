@@ -2913,6 +2913,7 @@
     content.onclick = null   // set by the Shipment Reconciliation list only
     content.onkeydown = null
     if (dashTimer) { clearInterval(dashTimer); dashTimer = null }   // the Dashboard refreshes itself while it is open
+    if (countTimer) { clearInterval(countTimer); countTimer = null }   // ...and so does the Count list
     const h = location.hash || (me.is_manager ? '#/invoices' : '#/count')
     if (!me.is_manager && !/^#\/(count|labels|dashboard)(\/|\?|$)/.test(h)) {
       const m2 = h.match(/^#\/(?:shipment|edit|reconcile)\/([0-9a-f-]{36})$/)
@@ -4857,8 +4858,9 @@
       : `Confirm "${name}" as counted?\n\nIt will be removed from this screen and an email to ${PURCHASING_EMAIL} will open for you to send.`
     if (!confirm(msg)) return
     const btn = $('confirmBtn'); btn.disabled = true
-    const { error } = await supabase.from('shipments').update({ status: 'counted' }).eq('id', sh.id)
+    const { error } = await supabase.from('shipments').update({ status: 'counted', summary: withPriority(sh, 0) }).eq('id', sh.id)   // it gives up its priority number
     if (error) { btn.disabled = false; return alert(`Couldn't confirm the shipment: ${friendlyDbError(error)}`) }
+    await closePriorityGaps()   // the numbers behind it move up now (2 becomes 1, 3 becomes 2), not when someone next opens the list
     const href = completionMailto(sh)
     sh.status = 'counted'; shipOptionsCache.at = 0
     countNotice = `"${name}" is confirmed and has gone to reconciliation. An email to ${PURCHASING_EMAIL} should have opened in your mail program. If it didn't, tell purchasing it is ready.`
@@ -5105,6 +5107,27 @@
     for (const [x, p] of changes) x.summary = withPriority(x, p)
   }
 
+  // Number the open shipments 1, 2, 3 again (within arrived / not arrived) after one has left the list. Done when a shipment is confirmed
+  // or completed, so the numbers are right for everyone straight away.
+  async function closePriorityGaps() {
+    try { const all = await loadShipmentCards(); shipOptionsCache = { at: Date.now(), rows: all }; await tidyPriorities(all.filter(s => s.status === 'open')) } catch { /* the list tidies itself when it is next opened */ }
+  }
+  // The Count list refreshes itself (every 30 seconds) so a shipment confirmed or ticked as arrived on another screen shows up, and the
+  // numbers close up, without anyone reloading. It is left alone while a priority box is being typed in.
+  let countTimer = null
+  async function refreshCountList() {
+    if (location.hash !== '#/count' || (document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('prio-input'))) return
+    try {
+      const all = await loadShipmentCards()
+      const open = all.filter(s => s.status === 'open')
+      const sig = list => list.map(s => `${s.id}:${prioOf(s)}:${arrivedOf(s) ? 1 : 0}`).sort().join('|')
+      if (sig(open) === sig(countData)) return
+      shipOptionsCache = { at: Date.now(), rows: all }
+      countData = open
+      await tidyPriorities(countData)
+      if (location.hash === '#/count') renderCountList()
+    } catch { /* try again next time */ }
+  }
   function renderCountList() {
     const notice = countNotice ? `<div class="notice ok">${esc(countNotice)}</div>` : ''
     countNotice = ''
@@ -5167,6 +5190,7 @@
       countData = all.filter(s => s.status === 'open')   // a shipment leaves this screen when its count is confirmed
       await tidyPriorities(countData)
       renderCountList()
+      countTimer = setInterval(refreshCountList, window.__countPollMs || 30000)
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
@@ -5627,9 +5651,10 @@
     const all = goodsLines.length > 0 && un === 0
     const status = completing ? 'received' : (all ? 'counted' : 'open')
     const summary = { ...(sh.summary || {}) }
-    if (completing) { summary.completed_at = new Date().toISOString(); summary.completed_by = me.name } else { delete summary.completed_at; delete summary.completed_by }
+    if (completing) { summary.completed_at = new Date().toISOString(); summary.completed_by = me.name; delete summary.priority } else { delete summary.completed_at; delete summary.completed_by }
     const { error } = await supabase.from('shipments').update({ status, summary }).eq('id', sh.id)
     if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
+    if (completing) await closePriorityGaps()
     sh.status = status; sh.summary = summary; shipOptionsCache.at = 0
     if (completing && lastShipmentId === sh.id) { lastShipmentId = null; try { sessionStorage.removeItem('rx_last_shipment') } catch {} }
     if (completing) { completedNotice = `"${shipName(sh)}" is complete. It has moved here from Shipment Reconciliation.`; location.hash = '#/completed' } else renderReconcile()
