@@ -2744,8 +2744,56 @@
     },
   }
   
+  // ============================================================
+  // HTS Spares Ltd (UK), the PDF invoice (the Excel one is read in core.mjs, under the same name). Pounds sterling. A line reads
+  // STOCK CODE (HTS's own part number), C+P CODE (our code, usually blank), description, qty, price, unit, value, VAT code. A description can
+  // carry on over more lines ("GENUINE"). "YOUR ORDER NO." is the PO. Dates are written "31/ 7/26". The totals block has its figures under
+  // their labels; carriage and VAT, if there are any, are carried as an amount outside the lines.
+  // ============================================================
+  const HTSPDF = {
+    name: 'HTS Spares Ltd', short: 'HTS',
+    detect: t => /HTS Spares Limited/i.test(t) && /C\+P CODE/.test(t),
+    parse(pages, source) {
+      const p1 = pages[0], txt = pages.map(p => p.text).join('\n')
+      const hdr = valuesBelow(p1, /ACCOUNT\s+REP/, 2)
+      const at = (lo, hi, re) => (hdr.find(i => i.x >= lo && i.x < hi && re.test(i.str.trim())) || { str: '' }).str.trim()
+      const day = raw => { const m = String(raw).replace(/\s+/g, '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); return m ? parseDate(`${m[1]}/${m[2]}/${m[3].length === 2 ? 2000 + +m[3] : m[3]}`) : '' }
+      const inv = {
+        supplier: this.name, po: (at(90, 260, /\d{4,}/).match(/\d{4,}/) || [''])[0],
+        invoice_no: at(440, 530, /^\d{4,}$/), invoice_date: day(at(380, 462, /\d\/\s*\d+\/\s*\d/)), due_date: '',
+        currency: /Pounds Sterling/i.test(txt) ? 'GBP' : /Euro/i.test(txt) ? 'EUR' : /US Dollar/i.test(txt) ? 'USD' : '', invoice_total: null, lines: [], notes: [], source,
+      }
+      // a figure in the totals block sits under its label (or on the same line)
+      const figure = label => {
+        for (const page of pages) {
+          const i = page.lines.findIndex(l => l.items.some(it => it.x >= 440 && label.test(it.str.trim())))
+          if (i < 0) continue
+          for (const l of page.lines.slice(i, i + 3)) { const f = l.items.find(it => it.x >= 500 && isNum(it.str.replace(/,/g, ''))); if (f) return usNum(f.str) }
+        }
+        return null
+      }
+      const COL = colsOf(['code', 105], ['cp', 170], ['desc', 360], ['qty', 390], ['price', 432], ['unit', 500], ['val', 556], ['vc', Infinity])
+      let cur = null
+      for (const page of pages) {
+        let inTable = false
+        for (const line of page.lines) {
+          if (/STOCK CODE/.test(line.text) && /C\+P CODE/.test(line.text)) { inTable = true; continue }
+          if (/^Pounds Sterling|^Euros?\b|^US Dollars|TOTAL GOODS/.test(line.text)) { inTable = false; cur = null }
+          if (!inTable) continue
+          const c = cellsOf(line, COL)
+          const qty = usNum(c.qty), val = usNum(c.val), price = usNum(c.price)
+          if (c.code && qty !== null && val !== null) cur = addLine(inv, { code: c.code, our_code: c.cp || '', desc: c.desc || '', qty, price, total: val })
+          else if (cur && !c.code && c.desc && !c.qty && !c.val) appendDesc(cur, c.desc)
+        }
+      }
+      inv.invoice_total = figure(/^INVOICE TOTAL$/)
+      const extra = Math.round(((figure(/^CARRIAGE$/) || 0) + (figure(/^TOTAL VAT$/) || 0)) * 100) / 100
+      return [verify(inv, { extra, extraLabel: 'carriage and VAT' })]
+    },
+  }
+  
   // ---- registered after the readers that are already in core (ratioparts, Rotary; BBT, HTS, Rotary list) ----
-  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX)
+  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF)
   EXCEL_PROFILES.push(PRORING, TOPENGINE)
   
 })()
