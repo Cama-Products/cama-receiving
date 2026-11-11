@@ -283,7 +283,21 @@
   .lblcell .btn { padding: 6px 12px; font-size: 12px; }
   .lbl-status { display: block; font-size: 11px; color: var(--slate); margin-top: 3px; text-align: right; min-height: 14px; }
   .lbl-status.bad { color: var(--err); font-weight: 600; }
-  #labelPrint { display: none; }
+  #labelPrint, #stmtPrint { display: none; }
+  @media print {
+    body.printing-stmt .shell, body.printing-stmt #loginScreen { display: none !important; }
+    body.printing-stmt #stmtPrint { display: block; }
+    body.printing-stmt { background: #fff; }
+    #stmtPrint { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 12px; }
+    #stmtPrint h1 { font-size: 20px; margin: 0 0 2px; }
+    #stmtPrint .sp-sub { color: #444; margin-bottom: 14px; }
+    #stmtPrint table { width: 100%; border-collapse: collapse; }
+    #stmtPrint th, #stmtPrint td { border-bottom: 1px solid #bbb; padding: 5px 6px; text-align: left; vertical-align: top; }
+    #stmtPrint th { border-bottom: 2px solid #000; font-size: 11px; text-transform: uppercase; }
+    #stmtPrint .num { text-align: right; white-space: nowrap; }
+    #stmtPrint tfoot td { border-bottom: 0; border-top: 2px solid #000; font-weight: 700; }
+    #stmtPrint .sp-foot { margin-top: 14px; color: #444; font-size: 11px; }
+  }
   @media print {
     .count-labels, th.lbl-col, td.lbl-col { display: none !important; }
     body.printing-labels .shell, body.printing-labels #loginScreen { display: none !important; }
@@ -446,6 +460,25 @@
   tr.scan-hit td { background: rgba(31,122,69,0.22) !important; box-shadow: inset 0 2px 0 var(--ok), inset 0 -2px 0 var(--ok); }
   tr.scan-cand td { background: rgba(31,122,69,0.10) !important; }
   @media print { .scan-panel { display: none; } }
+  .stmt-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 18px; overflow: hidden; }
+  .stmt-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .stmt-head h3 { margin: 0; font-size: 18px; color: var(--navy); }
+  .stmt-table td.num, .stmt-table th.num { white-space: nowrap; }
+  .stmt-clear { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 16px; border-top: 1px solid var(--border); background: #FBFCFE; }
+  .stmt-cleared { border-top: 1px solid var(--border); padding: 8px 16px 12px; }
+  .stmt-cleared summary { cursor: pointer; font-weight: 700; color: var(--slate); padding: 4px 0; }
+  .stmt-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .ship-note-box { margin: 18px 0 0; padding: 14px 18px; background: #fff; border: 1px solid var(--border); border-radius: 10px; }
+  .ship-note-box label { display: block; margin-bottom: 8px; }
+  .ship-note-box .muted { font-size: 13px; margin-left: 6px; }
+  .ship-note-box textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; font-size: 15px; border: 1px solid var(--border); border-radius: 8px; resize: vertical; min-height: 76px; }
+  .ship-note-box textarea:focus { outline: 2px solid var(--navy); outline-offset: -1px; }
+  .ship-note-status { margin-top: 4px; font-size: 12px; color: var(--slate-dim); min-height: 16px; }
+  .notice.count-note { background: #FFF8E5; border: 1px solid #F0D58A; color: var(--ink); }
+  .count-note-head { font-weight: 800; color: var(--warn); margin-bottom: 4px; }
+  .count-note-head span { font-weight: 500; font-size: 12px; color: var(--slate); margin-left: 6px; }
+  .count-note-text { white-space: pre-wrap; font-size: 15px; }
+  .note-tag { display: inline-block; padding: 1px 9px; border-radius: 99px; background: #FFF1C7; color: #8A5A00; font-size: 12px; font-weight: 700; }
   .confirm-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin: 18px 0 8px; padding: 16px 18px; background: #fff; border: 1px solid var(--border); border-radius: 10px; }
   .confirm-box .muted { font-size: 13px; margin-top: 2px; }
   #confirmBtn.ready { box-shadow: 0 0 0 3px var(--ok-tint); }
@@ -487,6 +520,7 @@
 </div>
 
 <div id="labelPrint" aria-hidden="true"></div>
+<div id="stmtPrint" aria-hidden="true"></div>
 <div id="appShell" class="shell" style="display:none;">
   <div class="sidebar" id="sidebar"></div>
   <div class="main">
@@ -1883,14 +1917,14 @@
   // ============================================================
   // Excel reconciliation sheet: every invoice's lines with PO qty, quantity and price variances, and notes
   // ============================================================
-  function reconciliationWorkbook(XLSX, { name, invoices, lines, poLines }) {
+  function reconciliationWorkbook(XLSX, { name, invoices, lines, poLines, countNote = '' }) {
     // columns: A Invoice, B PO, C Stock Code, D Supplier Code, E Description, F PO Qty, G Invoiced, H Received, I Variance,
     //          J PO Price, K Inv Price, L Line Total, M Price Var, N Check, O Note
     const NCOL = 15
     const aoa = [
       [`Shipment reconciliation: ${name}`],
       [`${invoices.length} invoice${invoices.length === 1 ? '' : 's'}`],
-      [],
+      [countNote ? `Notes from the count: ${countNote}` : ''],
       ['Invoice', 'PO', 'Stock Code', 'Supplier Code', 'Description', 'PO Qty', 'Invoiced', 'Received', 'Variance', 'PO Price', 'Inv Price', 'Line Total', 'Price Var', 'Check', 'Note'],
     ]
     const formulas = []   // [rowNumber, kind, range]
@@ -2959,7 +2993,7 @@
         ${link('dashboard', 'Dashboard', 'dashboard')}
         ${me.is_manager ? link('invoices', 'Invoice Creation', 'invoices') + link('edit', 'Shipment Edit', 'edit') + link('purchasing', 'Purchasing Information', 'purchasing') : ''}
         ${link('count', 'Shipment Count', 'count')}
-        ${me.is_manager ? link('reconcile', 'Shipment Reconciliation', 'reconcile') + link('completed', 'Completed Shipments', 'completed') : ''}
+        ${me.is_manager ? link('reconcile', 'Shipment Reconciliation', 'reconcile') + link('completed', 'Completed Shipments', 'completed') + link('statements', 'Creditor Statements', 'statements') : ''}
         ${link('labels', 'Label Printer', 'labels')}
       </div>
       <div class="sidebar-footer"><div class="nav-item" id="logoutNavItem">Log out</div></div>`
@@ -2998,6 +3032,7 @@
     if ((m = h.match(/^#\/reconcile\/([0-9a-f-]{36})$/))) return showReconcile(m[1])
     if (h === '#/reconcile') return showReconcileList()
     if (h === '#/completed') return showCompleted()
+    if (h === '#/statements') return showStatements()
     if (h === '#/dashboard') return showDashboard()
     return showInvoices()
   }
@@ -3033,7 +3068,7 @@
   }
   const invoiceBrief = inv => ({
     key: `${inv.supplier}|${inv.invoice_no}`, supplier: inv.supplier, invoice_no: inv.invoice_no, po: inv.po,
-    date: inv.invoice_date, currency: inv.currency, total: inv.invoice_total, lines: inv.lines.filter(l => !l.removed).length,
+    date: inv.invoice_date, currency: inv.currency, total: inv.invoice_total, value: invoiceValue(inv), lines: inv.lines.filter(l => !l.removed).length,
     pcs: inv.lines.filter(l => !l.removed && !l.is_freight).reduce((s, l) => s + (+l.qty || 0), 0), reader: inv.reader,
   })
   const invKey = i => `${i.supplier}|${i.invoice_no}`
@@ -3593,6 +3628,7 @@
     const status = ship.status === 'counted' && goods.some(i => !i.old) ? 'open' : (ship.status || 'open')
     if (ship.summary && ship.summary.completed_at) { summary.completed_at = ship.summary.completed_at; summary.completed_by = ship.summary.completed_by }
     if (ship.summary && ship.summary.priority) summary.priority = ship.summary.priority   // the Count list priority survives a re-match
+    if (ship.summary && ship.summary.count_note) summary.count_note = ship.summary.count_note   // ...and so do the notes from the count
     if (ship.summary && ship.summary.arrived) { summary.arrived = true; summary.arrived_at = ship.summary.arrived_at; summary.arrived_by = ship.summary.arrived_by }
     const name = (ship.name && ship.name.trim()) || autoName(summary.suppliers)
     const { error: shErr } = await supabase.from('shipments').update({
@@ -4674,6 +4710,7 @@
         </tr></thead>
         <tbody>${items.map(itemRowHtml).join('')}</tbody>
       </table></div>
+      ${shipNoteBoxHtml()}
       <div class="confirm-box" id="confirmBox">
         <div><strong>Finished counting?</strong><div class="muted" id="confirmHint"></div></div>
         <button class="btn" id="confirmBtn" type="button">Confirm shipment</button>
@@ -4709,6 +4746,7 @@
       inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); inp.blur() } })
     })
     $('confirmBtn').onclick = confirmShipment
+    wireShipmentNote()
     wireScan()
     if ($('printAllLbl')) {
       $('printAllLbl').onclick = printAllLabels
@@ -4901,6 +4939,38 @@
     scanFocusSoon()
   }
 
+  // ---------- notes for the whole shipment ----------
+  // The person counting can leave a note for purchasing about the shipment as a whole (damage, shortages, wrong parts). It is saved as they
+  // type, goes into the email when the shipment is confirmed, and is shown at the top of Shipment Reconciliation. (A note on one line is
+  // the Note box on that line.)
+  let noteTimer = null
+  const shipNote = s => ((s.summary || {}).count_note || {})
+  function shipNoteBoxHtml() {
+    const n = shipNote(cur.shipment)
+    return `<div class="ship-note-box">
+      <label for="shipNote"><strong>Notes for this shipment</strong> <span class="muted">Anything purchasing should know: damaged or missing goods, wrong parts, a short delivery. It is saved as you type, goes to Shipment Reconciliation and is added to the email when you confirm.</span></label>
+      <textarea id="shipNote" rows="3" maxlength="2000" placeholder="Type any notes about this shipment here">${esc(n.text || '')}</textarea>
+      <div class="ship-note-status" id="shipNoteStatus">${n.text && n.by ? `Saved by ${esc(n.by)}${n.at ? `, ${esc(fmtWhen(n.at))}` : ''}` : ''}</div>
+    </div>`
+  }
+  async function saveShipNote() {
+    clearTimeout(noteTimer)
+    const ta = $('shipNote'); if (!ta) return true
+    const text = ta.value.trim()
+    if (text === (shipNote(cur.shipment).text || '')) return true
+    $('shipNoteStatus').textContent = 'Saving…'
+    const r = await updateSummary(cur.shipment.id, m => { if (text) m.count_note = { text, by: me.name, at: new Date().toISOString() }; else delete m.count_note })
+    if (r.error) { $('shipNoteStatus').textContent = `Couldn't save the note: ${friendlyDbError(r.error)}`; return false }
+    cur.shipment.summary = r.summary
+    if ($('shipNoteStatus')) $('shipNoteStatus').textContent = text ? `Saved (${me.name}, ${fmtWhen(r.summary.count_note.at)})` : 'Note cleared'
+    return true
+  }
+  function wireShipmentNote() {
+    const ta = $('shipNote'); if (!ta) return
+    ta.addEventListener('input', () => { clearTimeout(noteTimer); $('shipNoteStatus').textContent = 'Typing…'; noteTimer = setTimeout(saveShipNote, 900) })
+    ta.addEventListener('blur', saveShipNote)
+  }
+
   // Confirm shipment: the count is finished. The shipment goes to Reconciliation (and leaves this screen), and an email to
   // purchasing opens in the default mail program, ready to send.
   const PURCHASING_EMAIL = 'purchasing@camaproducts.co.nz'
@@ -4915,6 +4985,7 @@
       (sh.invoice_nos || []).length ? `Invoices: ${sh.invoice_nos.join(', ')}` : null, (sh.pos || []).length ? `PO: ${sh.pos.join(', ')}` : null,
       `Counted by: ${me.name}`,
       `${counted} of ${items.length} items counted${diffs ? `, ${diffs} differ from the invoice` : ''}${notes ? `, ${notes} with notes` : ''}.`,
+      shipNote(sh).text ? `\r\nNotes from the count:\r\n${shipNote(sh).text.replace(/\r?\n/g, '\r\n')}` : null,
     ].filter(l => l !== null).join('\r\n')
     return `mailto:${PURCHASING_EMAIL}?subject=${encodeURIComponent(`Shipment ${name} is complete`)}&body=${encodeURIComponent(body)}`
   }
@@ -4926,8 +4997,10 @@
       : `Confirm "${name}" as counted?\n\nIt will be removed from this screen and an email to ${PURCHASING_EMAIL} will open for you to send.`
     if (!confirm(msg)) return
     const btn = $('confirmBtn'); btn.disabled = true
-    const { error } = await supabase.from('shipments').update({ status: 'counted', summary: withPriority(sh, 0) }).eq('id', sh.id)   // it gives up its priority number
+    if (!(await saveShipNote())) { btn.disabled = false; return alert("The note for this shipment couldn't be saved, so the shipment hasn't been confirmed. Try again.") }
+    const { error, summary: savedSummary } = await updateSummary(sh.id, m => { delete m.priority }, { status: 'counted' })   // it gives up its priority number
     if (error) { btn.disabled = false; return alert(`Couldn't confirm the shipment: ${friendlyDbError(error)}`) }
+    sh.summary = savedSummary
     await closePriorityGaps()   // the numbers behind it move up now (2 becomes 1, 3 becomes 2), not when someone next opens the list
     const href = completionMailto(sh)
     sh.status = 'counted'; shipOptionsCache.at = 0
@@ -5099,7 +5172,7 @@
     const hay = [shipName(s), ...(s.suppliers || []), ...(s.invoice_nos || []), ...invs.map(i => i.invoice_no), ...shipPOs(s)].join(' ')
     return `<div class="ship-card clickable ${isCount && sm.arrived ? 'arrived-card' : ''}" data-href="${href}" data-hay="${esc(hay.toLowerCase())}" data-norm="${esc(normCode(hay))}">
       <div class="ship-head">
-        <div class="ship-title">${isCount ? priorityBoxHtml(s) : ''}${isCount ? arrivedBoxHtml(s) : ''}<a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}</div>
+        <div class="ship-title">${isCount ? priorityBoxHtml(s) : ''}${isCount ? arrivedBoxHtml(s) : ''}<a class="ship-name" href="${href}">${esc(shipName(s))}</a> ${statusTag(s.status)}${sm.count_note && sm.count_note.text ? ' <span class="note-tag" title="This shipment has notes from the count">Notes</span>' : ''}</div>
         <div class="ship-actions"><a class="btn" href="${href}">${isCount ? 'Count' : isPurch ? 'View outstanding' : 'Reconcile'} →</a></div>
       </div>
       <div class="ship-meta">${esc(fmtWhen(s.created_at))} · ${plural(invs.length || (s.invoice_nos || []).length, 'invoice')} · ${plural(sm.lines || 0, 'line')} · ${fmtQty(sm.pcs || 0)} pcs${isPurch ? ` · ${plural(sm.still_open || 0, 'line')} still outstanding` : money && toCheck ? ` · ${toCheck} to check` : ''}</div>
@@ -5128,6 +5201,16 @@
   const arrivedOf = s => !!(s.summary || {}).arrived
   // arrived shipments first, then the ones still to arrive; in each, numbered ones by number, then the rest by when they were added
   const countOrder = (x, y) => { const ax = arrivedOf(x), ay = arrivedOf(y); if (ax !== ay) return ax ? -1 : 1; const px = prioOf(x), py = prioOf(y); return (px && py) ? px - py : px ? -1 : py ? 1 : String(x.created_at).localeCompare(String(y.created_at)) }
+  // Change part of a shipment's summary on top of the latest saved copy (the screen's copy can be out of date: someone may have added a note,
+  // ticked Arrived or set a priority since it was loaded). `extra` are other columns to save with it, such as the status.
+  async function updateSummary(id, mutate, extra = {}) {
+    const { data, error } = await supabase.from('shipments').select('summary').eq('id', id).single()
+    if (error) return { error }
+    const sm = { ...((data && data.summary) || {}) }
+    mutate(sm)
+    const r = await supabase.from('shipments').update({ ...extra, summary: sm }).eq('id', id)
+    return { error: r.error, summary: sm }
+  }
   const withPriority = (s, p) => { const sm = { ...(s.summary || {}) }; if (p) sm.priority = p; else delete sm.priority; return sm }
   // Has the shipment arrived? Anyone can tick it. It is kept in the shipment's summary, with who ticked it and when.
   function arrivedBoxHtml(s) {
@@ -5136,10 +5219,10 @@
   }
   async function setArrived(id, yes) {
     const s = countData.find(x => x.id === id); if (!s) return
-    const sm = { ...(s.summary || {}) }
-    delete sm.priority   // the numbers run within each section, so a shipment changing section starts unnumbered there
-    if (yes) { sm.arrived = true; sm.arrived_at = new Date().toISOString(); sm.arrived_by = me.name } else { delete sm.arrived; delete sm.arrived_at; delete sm.arrived_by }
-    const { error } = await supabase.from('shipments').update({ summary: sm }).eq('id', id)
+    const { error, summary: sm } = await updateSummary(id, m => {
+      delete m.priority   // the numbers run within each section, so a shipment changing section starts unnumbered there
+      if (yes) { m.arrived = true; m.arrived_at = new Date().toISOString(); m.arrived_by = me.name } else { delete m.arrived; delete m.arrived_at; delete m.arrived_by }
+    })
     if (error) { alert(`Couldn't save: ${friendlyDbError(error)}`); return renderCountList() }
     s.summary = sm; shipOptionsCache.at = 0
     await tidyPriorities(countData)   // the section it left closes up
@@ -5160,10 +5243,10 @@
     const changes = list.map((x, i) => [x, i + 1]).filter(([x, p]) => prioOf(x) !== p)
     if (!want && prioOf(s)) changes.push([s, 0])
     if (!changes.length) return renderCountList()
-    const res = await Promise.all(changes.map(([x, p]) => supabase.from('shipments').update({ summary: withPriority(x, p) }).eq('id', x.id)))
+    const res = await Promise.all(changes.map(([x, p]) => updateSummary(x.id, m => { if (p) m.priority = p; else delete m.priority })))
     const bad = res.find(r => r.error)
     if (bad) { alert(`Couldn't save the priority: ${friendlyDbError(bad.error)}`); return }
-    for (const [x, p] of changes) x.summary = withPriority(x, p)
+    changes.forEach(([x], i) => { x.summary = res[i].summary })
     shipOptionsCache.at = 0
     renderCountList()
   }
@@ -5171,8 +5254,8 @@
   async function tidyPriorities(list) {
     const changes = [true, false].flatMap(arr => list.filter(x => arrivedOf(x) === arr && prioOf(x)).sort(countOrder).map((x, i) => [x, i + 1])).filter(([x, p]) => prioOf(x) !== p)
     if (!changes.length) return
-    await Promise.all(changes.map(([x, p]) => supabase.from('shipments').update({ summary: withPriority(x, p) }).eq('id', x.id)))
-    for (const [x, p] of changes) x.summary = withPriority(x, p)
+    const res = await Promise.all(changes.map(([x, p]) => updateSummary(x.id, m => { if (p) m.priority = p; else delete m.priority })))
+    changes.forEach(([x], i) => { if (res[i].summary) x.summary = res[i].summary })
   }
 
   // Number the open shipments 1, 2, 3 again (within arrived / not arrived) after one has left the list. Done when a shipment is confirmed
@@ -5333,6 +5416,98 @@
     if ($('dashRefresh')) $('dashRefresh').onclick = () => loadDashboard()
   }
 
+  // ============================================================
+  // CREDITOR STATEMENTS: the invoices of completed shipments, collated under the supplier, so a supplier's statement can be matched to the list.
+  // Print one supplier's list; clear the invoices once they are paid (they are marked paid on their shipment, and can be restored).
+  // ============================================================
+  const money2 = v => (v === null || v === undefined || v === '' || !Number.isFinite(+v)) ? '' : (+v).toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  let stmt = { rows: [], showCleared: false, search: '', picked: new Set() }
+  async function showStatements() {
+    renderSidebar('statements')
+    setTop('Creditor Statements', 'Completed invoices by supplier, to match against their statements')
+    content.innerHTML = `<div class="empty-state">Loading…</div>`
+    try {
+      const ships = await fetchAll((x, y) => supabase.from('shipments').select('id, name, status, created_at, suppliers, invoice_list, summary').eq('status', 'received').order('created_at', { ascending: false }).range(x, y))
+      stmt.rows = ships.flatMap(s => (s.invoice_list || []).map(b => {
+        const paid = ((s.summary || {}).paid || {})[b.key]
+        return { id: `${s.id}|${b.key}`, ship: s, key: b.key, supplier: String(b.supplier || (s.suppliers || [])[0] || 'Unknown supplier').trim(), no: b.invoice_no || '', date: b.date || '', po: b.po || '', cur: b.currency || '', value: b.value ?? b.total ?? null, paid }
+      }))
+      stmt.picked = new Set(stmt.rows.filter(r => !r.paid).map(r => r.id))   // everything outstanding is ticked to start with
+      renderStatements()
+    } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
+  }
+  const stmtSort = (x, y) => String(x.date).localeCompare(String(y.date)) || String(x.no).localeCompare(String(y.no), 'en', { numeric: true })
+  const totalsByCurrency = rows => { const t = new Map(); for (const r of rows) if (r.value !== null && r.value !== undefined) t.set(r.cur || '', (t.get(r.cur || '') || 0) + (+r.value)); return [...t].map(([c, v]) => `${c ? c + ' ' : ''}${money2(v)}`).join(' + ') || '—' }
+  function renderStatements() {
+    const q = stmt.search.trim().toLowerCase()
+    const bySupplier = new Map()
+    for (const r of stmt.rows) { const k = r.supplier.toUpperCase(); if (!bySupplier.has(k)) bySupplier.set(k, { name: r.supplier, rows: [] }); bySupplier.get(k).rows.push(r) }
+    let groups = [...bySupplier.values()].sort((x, y) => x.name.localeCompare(y.name, 'en', { sensitivity: 'base' }))
+    if (q) groups = groups.filter(g => g.name.toLowerCase().includes(q) || g.rows.some(r => String(r.no).toLowerCase().includes(q) || String(r.po).includes(q)))
+    const card = g => {
+      const out = g.rows.filter(r => !r.paid).sort(stmtSort), cleared = g.rows.filter(r => r.paid).sort(stmtSort)
+      if (!out.length && !(stmt.showCleared && cleared.length)) return ''
+      const sel = out.filter(r => stmt.picked.has(r.id))
+      const gid = esc(g.name.toUpperCase())
+      return `<div class="stmt-card" data-g="${gid}">
+        <div class="stmt-head"><div><h3>${esc(g.name)}</h3><div class="muted">${plural(out.length, 'invoice')} to match · ${esc(totalsByCurrency(out))}</div></div>
+          <div class="stmt-actions"><button class="btn ghost" type="button" data-print="${gid}"${out.length ? '' : ' disabled'}>Print list</button></div></div>
+        ${out.length ? `<div class="table-wrap"><table class="grid stmt-table"><thead><tr><th><input type="checkbox" class="stmt-all" aria-label="Tick all"${sel.length === out.length ? ' checked' : ''}></th><th>Invoice</th><th>Invoice date</th><th>PO</th><th>Shipment</th><th>Completed</th><th class="num">Value</th></tr></thead>
+          <tbody>${out.map(r => `<tr><td><input type="checkbox" class="stmt-pick" data-id="${esc(r.id)}"${stmt.picked.has(r.id) ? ' checked' : ''} aria-label="Invoice ${esc(r.no)}"></td><td><strong>${esc(r.no)}</strong></td><td>${r.date ? esc(fmtDay(r.date)) : ''}</td><td>${esc(r.po)}</td><td>${esc(shipName(r.ship))}</td><td>${(r.ship.summary || {}).completed_at ? esc(fmtDay(r.ship.summary.completed_at)) : ''}</td><td class="num">${r.value === null || r.value === undefined ? '<span class="muted">no total</span>' : `${esc(r.cur)} ${esc(money2(r.value))}`}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td></td><td colspan="5">Total of ${plural(out.length, 'invoice')}</td><td class="num">${esc(totalsByCurrency(out))}</td></tr></tfoot></table></div>
+          <div class="stmt-clear"><button class="btn" type="button" data-clear="${gid}"${sel.length ? '' : ' disabled'}>Payment made: clear ${sel.length === out.length ? `all ${plural(out.length, 'invoice')}` : `the ${plural(sel.length, 'ticked invoice')}`}${sel.length ? ` (${esc(totalsByCurrency(sel))})` : ''}</button><span class="muted">Untick any invoice that is not part of the payment. Cleared invoices leave this list.</span></div>` : '<div class="muted" style="padding:10px 16px">Nothing outstanding.</div>'}
+        ${stmt.showCleared && cleared.length ? `<details class="stmt-cleared" open><summary>${plural(cleared.length, 'cleared invoice')}</summary><table class="grid"><tbody>${cleared.map(r => `<tr><td><strong>${esc(r.no)}</strong></td><td>${r.date ? esc(fmtDay(r.date)) : ''}</td><td>${esc(r.po)}</td><td class="num">${r.value === null || r.value === undefined ? '' : `${esc(r.cur)} ${esc(money2(r.value))}`}</td><td>Cleared ${esc(fmtWhen(r.paid.at))}${r.paid.by ? ` by ${esc(r.paid.by)}` : ''}</td><td class="num"><button class="btn ghost" type="button" data-restore="${esc(r.id)}">Put back</button></td></tr>`).join('')}</tbody></table></details>` : ''}
+      </div>`
+    }
+    const html = groups.map(card).join('')
+    const outstanding = stmt.rows.filter(r => !r.paid).length
+    content.innerHTML = `<div class="search-row"><input id="stmtSearch" type="search" placeholder="Find a supplier or invoice number" autocomplete="off" aria-label="Find a supplier or invoice"><label class="stmt-toggle"><input type="checkbox" id="stmtShowCleared"${stmt.showCleared ? ' checked' : ''}> Show cleared invoices</label><span class="muted">${plural(outstanding, 'invoice')} outstanding from ${plural(new Set(stmt.rows.filter(r => !r.paid).map(r => r.supplier.toUpperCase())).size, 'supplier')}</span></div>
+      ${html || `<div class="empty-state">${stmt.rows.length ? (q ? `Nothing matches "${esc(stmt.search)}".` : 'Every completed invoice has been cleared.') : 'No completed shipments yet. Invoices appear here when a shipment is completed in Shipment Reconciliation.'}</div>`}`
+    $('stmtSearch').value = stmt.search
+    $('stmtSearch').addEventListener('input', ev => { stmt.search = ev.target.value; const pos = ev.target.selectionStart; renderStatements(); const s = $('stmtSearch'); s.focus(); s.setSelectionRange(pos, pos) })
+    $('stmtShowCleared').addEventListener('change', ev => { stmt.showCleared = ev.target.checked; renderStatements() })
+    const group = el => groups.find(g => g.name.toUpperCase() === el.closest('.stmt-card').dataset.g)
+    content.querySelectorAll('.stmt-pick').forEach(c => c.addEventListener('change', () => { if (c.checked) stmt.picked.add(c.dataset.id); else stmt.picked.delete(c.dataset.id); renderStatements() }))
+    content.querySelectorAll('.stmt-all').forEach(c => c.addEventListener('change', () => { for (const r of group(c).rows.filter(r => !r.paid)) { if (c.checked) stmt.picked.add(r.id); else stmt.picked.delete(r.id) } renderStatements() }))
+    content.querySelectorAll('[data-print]').forEach(b => b.onclick = () => printStatement(group(b)))
+    content.querySelectorAll('[data-clear]').forEach(b => b.onclick = () => clearInvoices(group(b)))
+    content.querySelectorAll('[data-restore]').forEach(b => b.onclick = () => restoreInvoice(b.dataset.restore))
+  }
+  // Mark the ticked invoices of a supplier as paid. Each is recorded on its own shipment (who and when), so it can be put back.
+  async function clearInvoices(g) {
+    const rows = g.rows.filter(r => !r.paid && stmt.picked.has(r.id)); if (!rows.length) return
+    if (!confirm(`Clear ${plural(rows.length, 'invoice')} for ${g.name} (${totalsByCurrency(rows)}) as paid?\n\nThey leave this list. "Show cleared invoices" lists them, and each can be put back.`)) return
+    const byShip = new Map(); for (const r of rows) { if (!byShip.has(r.ship.id)) byShip.set(r.ship.id, []); byShip.get(r.ship.id).push(r) }
+    const at = new Date().toISOString()
+    const res = await Promise.all([...byShip].map(([id, rs]) => updateSummary(id, m => { m.paid = { ...(m.paid || {}) }; for (const r of rs) m.paid[r.key] = { at, by: me.name } })))
+    const bad = res.find(r => r.error); if (bad) return alert(`Couldn't clear them: ${friendlyDbError(bad.error)}`)
+    for (const r of rows) { r.paid = { at, by: me.name }; stmt.picked.delete(r.id) }
+    renderStatements()
+  }
+  async function restoreInvoice(id) {
+    const r = stmt.rows.find(x => x.id === id); if (!r) return
+    const { error } = await updateSummary(r.ship.id, m => { if (m.paid) { m.paid = { ...m.paid }; delete m.paid[r.key]; if (!Object.keys(m.paid).length) delete m.paid } })
+    if (error) return alert(`Couldn't put it back: ${friendlyDbError(error)}`)
+    r.paid = undefined; stmt.picked.add(r.id)
+    renderStatements()
+  }
+  // Print one supplier's outstanding list: an ordinary page to hold against the supplier's statement.
+  function printStatement(g) {
+    const out = g.rows.filter(r => !r.paid).sort(stmtSort); if (!out.length) return
+    const today = new Date().toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric' })
+    $('stmtPrint').innerHTML = `<h1>${esc(g.name)}</h1><div class="sp-sub">Creditor statement list · CAMA Products NZ · printed ${esc(today)}</div>
+      <table><thead><tr><th>Invoice</th><th>Invoice date</th><th>PO</th><th>Shipment</th><th class="num">Value</th></tr></thead>
+      <tbody>${out.map(r => `<tr><td>${esc(r.no)}</td><td>${r.date ? esc(fmtDay(r.date)) : ''}</td><td>${esc(r.po)}</td><td>${esc(shipName(r.ship))}</td><td class="num">${r.value === null || r.value === undefined ? 'no total' : `${esc(r.cur)} ${esc(money2(r.value))}`}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="4">Total of ${plural(out.length, 'invoice')}</td><td class="num">${esc(totalsByCurrency(out))}</td></tr></tfoot></table>
+      <div class="sp-foot">Tick each invoice against the supplier's statement. Anything on the statement that is not here, or here and not on the statement, needs checking.</div>`
+    document.body.classList.add('printing-stmt')
+    let done = false
+    const finish = () => { if (done) return; done = true; document.body.classList.remove('printing-stmt'); $('stmtPrint').innerHTML = ''; window.removeEventListener('afterprint', finish) }
+    window.addEventListener('afterprint', finish)
+    window.print()
+    setTimeout(finish, 60000)
+  }
+
   async function showReconcileList() {
     renderSidebar('reconcile')
     setTop('Shipment Reconciliation', 'Choose a shipment to reconcile')
@@ -5402,6 +5577,7 @@
     content.innerHTML = `
       <a class="back-link" href="#/reconcile">← All shipments</a>
       ${received ? `<div class="notice ok">This shipment is completed${sh.summary?.completed_at ? ` (${esc(fmtWhen(sh.summary.completed_at))}${sh.summary.completed_by ? ` by ${esc(sh.summary.completed_by)}` : ''})` : ''}. It is listed in <a href="#/completed">Completed Shipments</a>.</div>` : ''}
+      ${shipNote(sh).text ? `<div class="notice count-note"><div class="count-note-head">Notes from the count${shipNote(sh).by ? ` <span>${esc(shipNote(sh).by)}${shipNote(sh).at ? `, ${esc(fmtWhen(shipNote(sh).at))}` : ''}</span>` : ''}</div><div class="count-note-text">${esc(shipNote(sh).text)}</div></div>` : ''}
       ${counted < goods.length ? `<div class="notice warn" id="uncountedNotice">${uncountedNoticeHtml(goods.length - counted, sh)}</div>` : ''}
       <div class="facts">
         <div class="fact"><div class="label">Invoices</div><div class="value">${groups.length}</div></div>
@@ -5718,9 +5894,9 @@
     }
     const all = goodsLines.length > 0 && un === 0
     const status = completing ? 'received' : (all ? 'counted' : 'open')
-    const summary = { ...(sh.summary || {}) }
-    if (completing) { summary.completed_at = new Date().toISOString(); summary.completed_by = me.name; delete summary.priority } else { delete summary.completed_at; delete summary.completed_by }
-    const { error } = await supabase.from('shipments').update({ status, summary }).eq('id', sh.id)
+    const { error, summary } = await updateSummary(sh.id, m => {
+      if (completing) { m.completed_at = new Date().toISOString(); m.completed_by = me.name; delete m.priority } else { delete m.completed_at; delete m.completed_by }
+    }, { status })
     if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
     if (completing) await closePriorityGaps()
     sh.status = status; sh.summary = summary; shipOptionsCache.at = 0
@@ -5802,7 +5978,7 @@
 
   function downloadReconciliation() {
     const { shipment: sh, lines } = recon
-    const wb = reconciliationWorkbook(XLSX, { name: shipName(sh), invoices: sh.invoices || [], lines, poLines: sh.po_lines || [] })
+    const wb = reconciliationWorkbook(XLSX, { name: shipName(sh), invoices: sh.invoices || [], lines, poLines: sh.po_lines || [], countNote: shipNote(sh).text || '' })
     XLSX.writeFile(wb, `Reconciliation_${shipName(sh).replace(/[^A-Za-z0-9 _.-]+/g, '').trim().slice(0, 50) || 'shipment'}.xlsx`)
   }
 
