@@ -5424,11 +5424,11 @@
   let stmt = { rows: [], showCleared: false, search: '', picked: new Set() }
   async function showStatements() {
     renderSidebar('statements')
-    setTop('Creditor Statements', 'Completed invoices by supplier, to match against their statements')
+    setTop('Creditor Statements', 'Invoices sent to a statement, by supplier, to match against their statements')
     content.innerHTML = `<div class="empty-state">Loading…</div>`
     try {
       const ships = await fetchAll((x, y) => supabase.from('shipments').select('id, name, status, created_at, suppliers, invoice_list, summary').eq('status', 'received').order('created_at', { ascending: false }).range(x, y))
-      stmt.rows = ships.flatMap(s => (s.invoice_list || []).map(b => {
+      stmt.rows = ships.filter(s => (s.summary || {}).statement).flatMap(s => (s.invoice_list || []).map(b => {   // only shipments sent to a statement
         const paid = ((s.summary || {}).paid || {})[b.key]
         return { id: `${s.id}|${b.key}`, ship: s, key: b.key, supplier: String(b.supplier || (s.suppliers || [])[0] || 'Unknown supplier').trim(), no: b.invoice_no || '', date: b.date || '', po: b.po || '', cur: b.currency || '', value: b.value ?? b.total ?? null, paid }
       }))
@@ -5462,7 +5462,7 @@
     const html = groups.map(card).join('')
     const outstanding = stmt.rows.filter(r => !r.paid).length
     content.innerHTML = `<div class="search-row"><input id="stmtSearch" type="search" placeholder="Find a supplier or invoice number" autocomplete="off" aria-label="Find a supplier or invoice"><label class="stmt-toggle"><input type="checkbox" id="stmtShowCleared"${stmt.showCleared ? ' checked' : ''}> Show cleared invoices</label><span class="muted">${plural(outstanding, 'invoice')} outstanding from ${plural(new Set(stmt.rows.filter(r => !r.paid).map(r => r.supplier.toUpperCase())).size, 'supplier')}</span></div>
-      ${html || `<div class="empty-state">${stmt.rows.length ? (q ? `Nothing matches "${esc(stmt.search)}".` : 'Every completed invoice has been cleared.') : 'No completed shipments yet. Invoices appear here when a shipment is completed in Shipment Reconciliation.'}</div>`}`
+      ${html || `<div class="empty-state">${stmt.rows.length ? (q ? `Nothing matches "${esc(stmt.search)}".` : 'Every completed invoice has been cleared.') : 'Nothing has been sent to a statement yet. Press <strong>Complete &amp; send to statement</strong> in Shipment Reconciliation when you complete a shipment for a supplier who sends statements, or <strong>To statement</strong> beside a shipment in Completed Shipments.'}</div>`}`
     $('stmtSearch').value = stmt.search
     $('stmtSearch').addEventListener('input', ev => { stmt.search = ev.target.value; const pos = ev.target.selectionStart; renderStatements(); const s = $('stmtSearch'); s.focus(); s.setSelectionRange(pos, pos) })
     $('stmtShowCleared').addEventListener('change', ev => { stmt.showCleared = ev.target.checked; renderStatements() })
@@ -5565,12 +5565,15 @@
     for (const inv of sh.invoices || []) for (const ln of inv.lines) if (ln.is_freight) frByCur.set(inv.currency || '', (frByCur.get(inv.currency || '') || 0) + (+ln.freight_amount || 0))
     const freightText = [...frByCur].map(([c, n]) => moneyText(c, n)).join(' + ')
     const received = sh.status === 'received'
+    const onStatement = !!(sh.summary || {}).statement
     setTop(shipName(sh), `Shipment Reconciliation · ${plural(groups.length, 'invoice')} · ${statusTag(sh.status).replace(/<[^>]+>/g, '')}`,
       `${pickerHtml(sh.id, 'reconcile')}
        <button class="btn" id="dlBtn">Download reconciliation</button>
        <button class="btn ghost" id="printBtn">Print</button>
        ${sh.status === 'open' ? `<a class="btn ghost" href="#/count/${sh.id}">← Count</a>` : sh.status === 'counted' ? '<button class="btn ghost" id="reopenCountBtn" type="button">Reopen count</button>' : ''}
-       <button class="btn ${received ? 'ghost' : ''}" id="statusBtn">${received ? 'Reopen shipment' : 'Complete shipment'}</button>`)
+       ${received
+         ? `<button class="btn ghost" id="statusBtn">Reopen shipment</button><button class="btn ghost" id="statementBtn" type="button">${onStatement ? 'Take off statement' : 'Send to statement'}</button>`
+         : `<button class="btn" id="statusBtn">Complete shipment</button><button class="btn ghost" id="statementBtn" type="button" title="Complete the shipment and add its invoices to Creditor Statements">Complete &amp; send to statement</button>`}`)
     wirePicker('reconcile')
 
     const chip = (f, label, n, issue) => `<button class="chip ${issue && n ? 'issue' : ''}" data-f="${f}" aria-pressed="false">${label}<b>${n}</b></button>`
@@ -5636,7 +5639,8 @@
     }
     $('dlBtn').onclick = downloadReconciliation
     $('printBtn').onclick = () => window.print()
-    $('statusBtn').onclick = toggleReceived
+    $('statusBtn').onclick = () => toggleReceived(false)
+    $('statementBtn').onclick = () => received ? setStatement(sh, !onStatement) : toggleReceived(true)
   }
 
   function invCardHtml(g) {
@@ -5668,10 +5672,13 @@
       extraRows += `<tr class="tot-verdict"><td></td><td colspan="11">${Math.abs(diff) <= 0.015 ? '<span class="tot-ok">&#10003; The line total is the same as the invoice total.</span>' : `<span class="tot-warn">&#10007; The line total is ${esc(reconMoney(Math.abs(diff), cur))} ${diff > 0 ? 'more' : 'less'} than the invoice total.</span>`}</td></tr>`
     }
     const meta = [g.inv.po ? `PO ${esc(g.inv.po)}` : '', g.inv.invoice_date ? `Invoice date ${esc(fmtDay(g.inv.invoice_date))}` : '', g.inv.invoice_total != null ? `Total ${esc(cur)} ${fmtMoney(g.inv.invoice_total)}` : '', `${plural(ls.length, 'line')}`].filter(Boolean).join(' · ')
+    // the invoice as it was uploaded (the PDF or Excel file), to open and check against the lines
+    const srcFile = (recon.shipment.files || []).find(f => f.path && f.name === g.inv.source)
+    const viewBtn = srcFile ? `<button class="btn ghost inv-view no-print" type="button" data-path="${esc(srcFile.path)}" title="Open the file this invoice was read from (${esc(srcFile.name)})">${/\.pdf$/i.test(srcFile.name) ? 'View invoice' : 'Open invoice file'}</button>` : ''
     return `<details class="inv-card" open data-key="${esc(g.key)}">
       <summary>
         <div><div class="inv-title">Invoice ${esc(g.invoice_no)} · ${esc(g.supplier)}</div><div class="inv-sub">${meta}</div></div>
-        <div class="inv-stats">${stats}</div>
+        <div class="inv-stats">${viewBtn}${stats}</div>
       </summary>
       <div class="table-wrap"><table class="grid">
         <thead><tr><th>Stock code</th><th>Description</th><th>PO</th><th class="num col-poq">PO qty</th><th class="num">Invoiced</th><th class="num col-recv">Received</th><th class="num sortable" data-sort="var" tabindex="0" role="button" title="Sort by variance">Variance</th>
@@ -5804,7 +5811,17 @@
   const uncountedNoticeHtml = (n, sh) => sh.status === 'open'
     ? `${plural(n, 'line')} not counted yet. Finish the count in <a href="#/count/${sh.id}">Shipment Count</a> so the variances below are complete.`
     : `${plural(n, 'line')} not counted. Type the quantity received in the Received column, or reopen the count.`
+  // View invoice: open the uploaded file in a new tab. The tab is opened straight away (browsers block one opened after a wait) and pointed
+  // at the file once its temporary link is ready.
+  async function openInvoiceFile(ev) {
+    ev.preventDefault(); ev.stopPropagation()   // the button sits in the card's heading, which would otherwise fold the card
+    const w = window.open('', '_blank')
+    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(ev.currentTarget.dataset.path, 600)
+    if (data && data.signedUrl) { if (w) { w.opener = null; w.location.href = data.signedUrl } else window.open(data.signedUrl, '_blank') }
+    else { if (w) w.close(); alert(`Couldn't open the invoice: ${(error && error.message) || 'file not found'}`) }
+  }
   function wireReconInputs(root) {
+    root.querySelectorAll('.inv-view').forEach(b => { b.onclick = openInvoiceFile })
     root.querySelectorAll('th.sortable').forEach(th => {
       const go = () => { const col = th.dataset.sort; reconSort = reconSort && reconSort.col === col ? (reconSort.dir === 1 ? { col, dir: -1 } : null) : { col, dir: 1 }; applyReconSort(content); applyReconFilter(content.querySelector('.filters .chip[aria-pressed="true"]')?.dataset.f || 'all') }
       th.addEventListener('click', go)
@@ -5883,25 +5900,38 @@
   // Complete shipment: the reconciliation is finished. The shipment moves to Completed Shipments (stored as status 'received').
   // Reopen shipment puts it back in Shipment Reconciliation.
   let completedNotice = ''
-  async function toggleReceived() {
+  async function toggleReceived(sendToStatement = false) {
     const sh = recon.shipment
     const completing = sh.status !== 'received'
     const goodsLines = recon.lines.filter(l => !isFreightFlags(l.flags))
     const un = goodsLines.filter(l => !isCounted(l)).length
     if (completing) {
       const warn = [sh.status === 'open' ? 'The count has not been confirmed.' : '', un ? `${plural(un, 'line')} not counted.` : ''].filter(Boolean)
-      if (!confirm(`Complete "${shipName(sh)}"?${warn.length ? `\n\n${warn.join(' ')}` : ''}\n\nDo this once the goods receipt has been entered in MYOB. The shipment moves to Completed Shipments, where it can be searched for and reopened.`)) return
+      if (!confirm(`Complete "${shipName(sh)}"?${warn.length ? `\n\n${warn.join(' ')}` : ''}\n\nDo this once the goods receipt has been entered in MYOB. The shipment moves to Completed Shipments, where it can be searched for and reopened.${sendToStatement ? '\n\nIts invoices are also added to Creditor Statements, under the supplier.' : ''}`)) return
     }
     const all = goodsLines.length > 0 && un === 0
     const status = completing ? 'received' : (all ? 'counted' : 'open')
     const { error, summary } = await updateSummary(sh.id, m => {
-      if (completing) { m.completed_at = new Date().toISOString(); m.completed_by = me.name; delete m.priority } else { delete m.completed_at; delete m.completed_by }
+      if (completing) {
+        m.completed_at = new Date().toISOString(); m.completed_by = me.name; delete m.priority
+        if (sendToStatement) m.statement = { at: m.completed_at, by: me.name }; else delete m.statement   // only shipments sent to a statement are listed in Creditor Statements
+      } else { delete m.completed_at; delete m.completed_by }
     }, { status })
     if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
     if (completing) await closePriorityGaps()
     sh.status = status; sh.summary = summary; shipOptionsCache.at = 0
     if (completing && lastShipmentId === sh.id) { lastShipmentId = null; try { sessionStorage.removeItem('rx_last_shipment') } catch {} }
     if (completing) { completedNotice = `"${shipName(sh)}" is complete. It has moved here from Shipment Reconciliation.`; location.hash = '#/completed' } else renderReconcile()
+  }
+
+  // Put a completed shipment's invoices on the Creditor Statements list, or take them off. (Not every supplier sends statements, so this is a choice
+  // made per shipment: "Complete & send to statement" when completing, or "Send to statement" afterwards.)
+  async function setStatement(sh, on) {
+    const { error, summary } = await updateSummary(sh.id, m => { if (on) m.statement = { at: new Date().toISOString(), by: me.name }; else delete m.statement })
+    if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
+    sh.summary = summary; shipOptionsCache.at = 0
+    if (recon && recon.shipment && recon.shipment.id === sh.id) renderReconcile()
+    return summary
   }
 
   // ============================================================
@@ -5944,18 +5974,28 @@
       const hits = index.filter(x => terms.every(t => x.text.includes(t) || (normCode(t) && x.norm.includes(normCode(t))))).map(x => x.s)
       $('doneCount').textContent = terms.length ? `${hits.length} of ${rows.length} shipments` : `${rows.length} shipment${rows.length === 1 ? '' : 's'}`
       $('doneBody').innerHTML = hits.slice(0, LIMIT).map(s => `<tr data-id="${s.id}" class="done-row" tabindex="0">
-          <td><strong>${esc(shipName(s))}</strong></td>
+          <td><strong>${esc(shipName(s))}</strong>${(s.summary || {}).statement ? ' <span class="note-tag" title="Its invoices are on Creditor Statements">On statement</span>' : ''}</td>
           <td>${esc((s.suppliers || []).join(', '))}</td>
           <td title="${esc((s.invoice_nos || []).join(', '))}">${esc(clipList(s.invoice_nos))}</td>
           <td title="${esc(shipPOs(s).join(', '))}">${esc(clipList(shipPOs(s), 4))}</td>
           <td>${esc(fmtWhen(doneAt(s)))}${s.summary?.completed_by ? `<span class="sub">${esc(s.summary.completed_by)}</span>` : ''}</td>
           <td class="num">${fmtQty((s.summary || {}).lines || 0)}</td><td class="num">${fmtQty((s.summary || {}).pcs || 0)}</td>
-          <td class="act"><a class="btn ghost" href="#/reconcile/${s.id}">View</a> <button class="btn ghost" type="button" data-reopen="${s.id}">Reopen</button></td>
+          <td class="act"><a class="btn ghost" href="#/reconcile/${s.id}">View</a> <button class="btn ghost" type="button" data-statement="${s.id}">${(s.summary || {}).statement ? 'Off statement' : 'To statement'}</button> <button class="btn ghost" type="button" data-reopen="${s.id}">Reopen</button></td>
         </tr>`).join('') + (hits.length > LIMIT ? `<tr><td colspan="8" class="muted">Showing the first ${LIMIT} of ${hits.length}. Type more of the invoice number, PO number or supplier to narrow it down.</td></tr>` : '')
         || `<tr><td colspan="8" class="empty-state" style="border:0">No completed shipment matches "${esc($('doneSearch').value.trim())}".</td></tr>`
     }
     $('doneSearch').oninput = draw
     $('doneBody').onclick = async ev => {
+      const sb = ev.target.closest('[data-statement]')
+      if (sb) {
+        const s = rows.find(r => r.id === sb.dataset.statement)
+        const on = !(s.summary || {}).statement
+        const { error, summary } = await updateSummary(s.id, m => { if (on) m.statement = { at: new Date().toISOString(), by: me.name }; else delete m.statement })
+        if (error) return alert(`Couldn't update the shipment: ${friendlyDbError(error)}`)
+        s.summary = summary
+        completedNotice = on ? `"${shipName(s)}" is on Creditor Statements.` : `"${shipName(s)}" is off Creditor Statements.`
+        return renderCompleted(rows)
+      }
       const rb = ev.target.closest('[data-reopen]')
       if (rb) {
         const s = rows.find(r => r.id === rb.dataset.reopen)
