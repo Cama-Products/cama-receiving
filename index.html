@@ -309,6 +309,8 @@
 
   /* ============ Shipment Edit: part number, qty, new lines ============ */
   td.partno input { width: 150px; padding: 6px 8px; font-size: 13px; font-weight: 600; }
+  td.pocell input { width: 78px; padding: 6px 8px; font-size: 13px; font-weight: 700; }
+  td.pocell .sub { display: block; font-size: 12px; color: var(--slate-dim); margin-top: 3px; }
   td.qtycell input, td.pricecell input, td.totalcell input { width: 84px; padding: 6px 8px; font-size: 13px; font-weight: 700; text-align: right; }
   td.pricecell input, td.totalcell input { width: 96px; }
   .sort-pick { margin-left: auto; font-size: 13px; color: var(--slate); display: inline-flex; align-items: center; gap: 6px; }
@@ -1417,6 +1419,7 @@
       desc: l.desc || '', qty: num(l.qty) || 0, price: num(l.price), total: num(l.total), po: l.po || '',
       ...(l.manual_code ? { manual_code: true, orig_our_code: l.orig_our_code || '' } : {}),
       ...(l.is_freight ? { is_freight: true, freight_amount: l.freight_amount ?? 0 } : {}),
+      ...(l.po_manual ? { po_manual: true, orig_po: l.orig_po ?? '' } : {}),
     }))
     const backorders = inv.lines.filter(l => !(l.qty > 0) && !l.is_freight).length
     if (backorders && !inv.notes.some(n => /quantity 0/.test(n))) inv.notes.push(`${backorders} line${backorders === 1 ? '' : 's'} with quantity 0 ${backorders === 1 ? 'is a back order' : 'are back orders'}: left out of the count and reconciliation, and still on order.`)
@@ -1495,6 +1498,9 @@
         }
   
         const stated = String(ln.po || inv.po || '').match(/\d{4,}/g) || []
+        // A PO chosen for this line in Shipment Edit is a decision: only that PO is used for the line (the part has to be on it).
+        const pinned = !!ln.po_manual && stated.length > 0
+        if (pinned) cands = cands.filter(i => stated.includes(poLines[i].po))
         cands.sort((a, b) => (stated.includes(poLines[a].po) ? 0 : 1) - (stated.includes(poLines[b].po) ? 0 : 1) || age(a) - age(b))
   
         let left = ln.qty || 0
@@ -1509,6 +1515,7 @@
         let status = 'ok'
         // lines changed in Shipment Edit say so, so a reconciliation never silently differs from the supplier's invoice
         if (ln.added) flags.push('Line added in Shipment Edit')
+        if (pinned) flags.push(`PO chosen in Shipment Edit: ${stated.join(', ')}${ln.orig_po !== undefined ? ` (the invoice said ${String(ln.orig_po || inv.po || '').trim() || 'no PO'})` : ''}`)
         if (ln.orig_qty !== undefined && ln.orig_qty !== null && +ln.orig_qty !== +ln.qty) flags.push(`Quantity changed in Shipment Edit: invoice said ${ln.orig_qty}`)
         if (ln.orig_code && ln.orig_code !== ln.code) flags.push(`Part number changed in Shipment Edit: invoice said ${ln.orig_code}`)
         if (ln.orig_price !== undefined && ln.orig_price !== null && Number(ln.orig_price) !== Number(ln.price)) flags.push(`Price changed in Shipment Edit: invoice said ${ln.orig_price}`)
@@ -1517,7 +1524,7 @@
         if (freight) flags.push(`Freight charge: ${moneyText(inv.currency, ln.freight_amount ?? 0)}`)
         if (!cands.length) {
           status = freight ? 'ok' : 'not_on_po'
-          if (!freight) flags.push(manual ? `Our code entered manually: ${String(ln.our_code).trim()} (not on a loaded PO)` : 'Not on any loaded PO')
+          if (!freight) flags.push(pinned ? `Not on PO ${stated.join(', ')} (the part is not among that PO's loaded lines)` : manual ? `Our code entered manually: ${String(ln.our_code).trim()} (not on a loaded PO)` : 'Not on any loaded PO')
         } else {
           if (manual) flags.push(`Our code entered manually: ${String(ln.our_code).trim()}`)
           if (via === 'old') flags.push(`Superseded: invoiced as ${ln.code}, MYOB has ${first.stock_code}`)
@@ -1941,7 +1948,8 @@
       const ls = (groups.get(k) || []).slice().sort((a, b) => comparePoThenPart(a, b, invoices))
       const inv = invoices.find(i => `${i.supplier}|${i.invoice_no}` === k)
       const head = ls[0] || {}
-      aoa.push([`Invoice ${inv?.invoice_no || head.invoice_no}  ${inv?.supplier || head.supplier || ''}  PO ${inv?.po || ''}${inv?.invoice_date ? `  Invoice date ${inv.invoice_date}` : ''}`])
+      const linePos = [...new Set(ls.flatMap(l => (l.pos || []).map(p => String(p[0]))))].sort((x, y) => x.localeCompare(y, 'en', { numeric: true }))
+      aoa.push([`Invoice ${inv?.invoice_no || head.invoice_no}  ${inv?.supplier || head.supplier || ''}  PO ${linePos.length ? linePos.join(', ') : (inv?.po || '')}${inv?.invoice_date ? `  Invoice date ${inv.invoice_date}` : ''}`])
       const first = aoa.length + 1
       const many = new Set(ls.map(poOf).filter(Boolean)).size > 1       // an invoice on two or more POs is grouped by PO, each group with its own heading
       let curPo = null
@@ -3066,8 +3074,13 @@
       ? `The database needs the latest update. Run migration_2.sql in the Supabase SQL Editor, then reload. (${m})`
       : m
   }
+  // the PO(s) an invoice is on: the PO of each of its lines (the one the invoice names, or the one a line was put under in Shipment Edit)
+  const invoicePoText = inv => {
+    const nums = [...new Set(inv.lines.filter(l => !l.removed).map(l => l.po || inv.po || '').join(' ').match(/\d{4,}/g) || [])]
+    return nums.length > 1 || (nums.length === 1 && nums[0] !== String(inv.po || '').trim()) ? nums.join(', ') : inv.po
+  }
   const invoiceBrief = inv => ({
-    key: `${inv.supplier}|${inv.invoice_no}`, supplier: inv.supplier, invoice_no: inv.invoice_no, po: inv.po,
+    key: `${inv.supplier}|${inv.invoice_no}`, supplier: inv.supplier, invoice_no: inv.invoice_no, po: invoicePoText(inv),
     date: inv.invoice_date, currency: inv.currency, total: inv.invoice_total, value: invoiceValue(inv), lines: inv.lines.filter(l => !l.removed).length,
     pcs: inv.lines.filter(l => !l.removed && !l.is_freight).reduce((s, l) => s + (+l.qty || 0), 0), reader: inv.reader,
   })
@@ -3175,7 +3188,7 @@
   // The find box in the title bar of a screen (base = edit, reconcile, count...): type, and the matching shipments are listed under it.
   function wireShipFind(base) {
     const input = $('shipFind'), box = $('shipFindResults'); if (!input) return
-    const rows = shipOptionsCache.rows.filter(s => base === 'count' ? s.status === 'open' : s.status !== 'received')   // completed shipments are in Completed Shipments
+    const rows = shipOptionsCache.rows.filter(s => base === 'count' ? s.status === 'open' : base === 'reconcile' ? s.status === 'counted' : s.status !== 'received')   // completed shipments are in Completed Shipments; Reconciliation has the counts that were sent through
     const index = rows.map(s => { const h = shipHay(s); return { s, hay: h.toLowerCase(), norm: normCode(h) } })
     let hits = []
     const open = id => { location.hash = `#/${base}/${id}` }
@@ -4015,9 +4028,10 @@
     content.querySelectorAll('[data-addpo]').forEach(b => b.onclick = () => addPoToShipment(b.dataset.addpo))
     // part number and quantity are edited in place; the line is saved when you leave the box
     body.addEventListener('change', ev => {
-      const inp = ev.target.closest('td.partno input, td.qtycell input, td.pricecell input, td.totalcell input'); if (!inp) return
+      const inp = ev.target.closest('td.partno input, td.qtycell input, td.pricecell input, td.totalcell input, td.pocell input'); if (!inp) return
       const tr = inp.closest('tr'), key = tr.dataset.inv, idx = +tr.dataset.idx
       if (inp.closest('td.partno')) changePartNumber(key, idx, inp.value)
+      else if (inp.closest('td.pocell')) changeLinePo(key, idx, inp.value)
       else if (inp.closest('td.pricecell')) changePrice(key, idx, inp.value)
       else if (inp.closest('td.totalcell')) changeTotal(key, idx, inp.value)
       else changeQuantity(key, idx, inp.value)
@@ -4044,7 +4058,7 @@
       }
     })
     body.addEventListener('keydown', ev => {
-      if (ev.key !== 'Enter' || !ev.target.closest('td.ourcode input, td.partno input, td.qtycell input, td.pricecell input, td.totalcell input')) return
+      if (ev.key !== 'Enter' || !ev.target.closest('td.ourcode input, td.partno input, td.qtycell input, td.pricecell input, td.totalcell input, td.pocell input')) return
       ev.preventDefault()
       const cls = ev.target.closest('td').className.split(' ')[0]
       const all = [...body.querySelectorAll(`tr:not([hidden]) td.${cls} input`)]
@@ -4062,7 +4076,7 @@
       <summary><div><div class="inv-title">Invoice ${esc(inv.invoice_no)} · ${esc(inv.supplier)}</div><div class="inv-sub">${meta}</div></div>
         <button class="btn ghost add-line" type="button" data-act="add-line" data-key="${esc(invKey(inv))}">+ Add line</button></summary>
       <div class="table-wrap"><table class="grid">
-        <thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th class="num">Inv price</th><th class="num">Line total</th><th>Matched to</th><th>Our code</th></tr></thead>
+        <thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th class="num">Inv price</th><th class="num">Line total</th><th>Matched to</th><th>PO</th><th>Our code</th></tr></thead>
         <tbody>${g.rows.map(editRowHtml).join('')}</tbody>
         ${editTotalsHtml(inv, g.rows)}
       </table></div>
@@ -4091,10 +4105,10 @@
       if (Math.abs(diff) > 0.015 && edited) verdict += ` <span class="muted">(includes your edits. Reset the edited lines to see whether the invoice itself added up.)</span>`
     }
     return `<tfoot>
-      <tr><td></td><td>Lines add up to</td><td class="num">${fmtQty(qtyTotal)}</td><td></td><td class="num">${money(sum)}</td><td colspan="2">${unpriced ? `<span class="muted">${plural(unpriced, 'line')} with no price</span>` : ''}</td></tr>
-      ${adj ? `<tr class="tot-sub"><td></td><td>${adj.amount < 0 ? 'Less' : 'Plus'} ${esc(adj.label)}</td><td></td><td></td><td class="num">${money(adj.amount)}</td><td colspan="2"></td></tr>` : ''}
-      <tr><td></td><td>Invoice total (printed on the invoice)</td><td></td><td></td><td class="num">${printed === null || printed === undefined || printed === '' ? '&mdash;' : money(printed)}</td><td colspan="2"></td></tr>
-      <tr class="tot-verdict"><td></td><td colspan="6">${verdict}</td></tr>
+      <tr><td></td><td>Lines add up to</td><td class="num">${fmtQty(qtyTotal)}</td><td></td><td class="num">${money(sum)}</td><td colspan="3">${unpriced ? `<span class="muted">${plural(unpriced, 'line')} with no price</span>` : ''}</td></tr>
+      ${adj ? `<tr class="tot-sub"><td></td><td>${adj.amount < 0 ? 'Less' : 'Plus'} ${esc(adj.label)}</td><td></td><td></td><td class="num">${money(adj.amount)}</td><td colspan="3"></td></tr>` : ''}
+      <tr><td></td><td>Invoice total (printed on the invoice)</td><td></td><td></td><td class="num">${printed === null || printed === undefined || printed === '' ? '&mdash;' : money(printed)}</td><td colspan="3"></td></tr>
+      <tr class="tot-verdict"><td></td><td colspan="7">${verdict}</td></tr>
       ${adjustRowHtml(inv, adj, printed, expected, money)}
     </tfoot>`
   }
@@ -4108,7 +4122,7 @@
     const kind = !adj ? 'discount' : adj.amount < 0 ? 'discount' : /freight/i.test(adj.label) ? 'freight' : /tax/i.test(adj.label) ? 'tax' : 'charge'
     const opt = (v, t) => `<option value="${v}" ${kind === v ? 'selected' : ''}>${t}</option>`
     const newTotal = adj ? adj.amount + diff : diff
-    return `<tr class="tot-adjust" data-inv="${esc(invKey(inv))}"><td></td><td colspan="6">
+    return `<tr class="tot-adjust" data-inv="${esc(invKey(inv))}"><td></td><td colspan="7">
       <div class="adjust-box">
         <span class="adjust-title">Discount or charge that is on the invoice total but not in its lines</span>
         <span class="adjust-form">
@@ -4135,13 +4149,13 @@
     else if (!db) matched = '<span class="muted">—</span>'
     else if (db.status === 'not_on_po') matched = manual
       ? `<strong>${esc(db.stock_code)}</strong><span class="flag" style="color:var(--warn)">Not on a loaded PO</span>`
-      : '<span class="flag" style="display:inline">Not on any loaded PO</span>' + elsewhereHint(r)
+      : `<span class="flag" style="display:inline">${ln.po_manual ? `Not on PO ${esc(String(ln.po || '').trim())}` : 'Not on any loaded PO'}</span>` + elsewhereHint(r)
     else if (ln.is_freight && !(db.pos || []).length) matched = `<strong>${esc(db.stock_code)}</strong><span class="sub" style="display:block;color:var(--navy);font-size:12px;font-weight:600">Freight charge</span>`
     else matched = (db.status === 'over' ? `<span class="check-flag">${esc(overText(r))}</span>` : '') + poStoryHtml(r) + `<strong>${esc(db.stock_code)}</strong><span class="sub" style="display:block;color:var(--slate-dim);font-size:12px">PO ${esc((db.pos || []).map(p => p[0]).join(', '))}${db.bin ? ' · ' + esc(db.bin) : ''}</span>`
     return `<tr class="${needs ? 'not_on_po' : ''} ${check ? 'to-check' : ''}" data-inv="${esc(invKey(inv))}" data-idx="${idx}" data-tags="${tag}">
       <td class="partno"><input type="text" maxlength="40" value="${esc(ln.code)}" aria-label="Part number" autocomplete="off">
         ${ln.added ? `<span class="sub"><span class="edit-tag">Added</span><button class="link-btn danger" data-act="remove-added">Remove</button></span>`
-          : codeEdited || qtyEdited || priceEdited || totalEdited ? `<span class="sub"><span class="edit-tag">Edited</span><button class="link-btn" data-act="reset-line">Reset</button></span>` : ''}
+          : codeEdited || qtyEdited || priceEdited || totalEdited || ln.po_manual ? `<span class="sub"><span class="edit-tag">Edited</span><button class="link-btn" data-act="reset-line">Reset</button></span>` : ''}
         ${codeEdited ? `<span class="sub">invoice said ${esc(ln.orig_code)}</span>` : ''}</td>
       <td>${esc(ln.desc)}</td>
       <td class="qtycell num"><input type="number" inputmode="decimal" step="any" min="0" value="${esc(ln.qty)}" aria-label="Quantity for ${esc(ln.code)}">
@@ -4151,6 +4165,8 @@
       <td class="totalcell num"><input type="number" inputmode="decimal" step="any" min="0" value="${lineAmount(ln) == null ? '' : esc(fmt2(lineAmount(ln)).replace(/,/g, ''))}" placeholder="—" aria-label="Line total for ${esc(ln.code)}">
         ${totalEdited ? `<span class="sub">invoice said ${ln.orig_total == null ? 'no total' : fmt2(ln.orig_total)}</span>` : ''}</td>
       <td>${matched}</td>
+      <td class="pocell">${ln.is_freight ? '' : `<input type="text" maxlength="12" inputmode="numeric" value="${esc((String(ln.po || inv.po || '').match(/\d{4,}/g) || []).join(', '))}" placeholder="PO" aria-label="PO for ${esc(ln.code)}" autocomplete="off" title="The PO this line is on. Type another PO number to put the line under it.">`}
+        ${ln.po_manual ? `<span class="manual-tag">Chosen</span><span class="sub">invoice said ${esc(String(ln.orig_po || inv.po || '').trim() || 'no PO')}</span>` : ''}</td>
       <td class="ourcode"><input type="text" maxlength="40" value="${manual ? esc(ln.our_code) : ''}" placeholder="Our code" aria-label="Our code for ${esc(ln.code)}" autocomplete="off">
         ${ln.is_freight ? `<span class="manual-tag freight">Freight ${esc(moneyText(inv.currency, ln.freight_amount ?? 0))}</span> <button class="link-btn" data-act="edit-freight">Edit amount</button> <button class="link-btn" data-act="clear-code">Clear</button>`
           : manual ? `<span class="manual-tag">Manual</span> <button class="link-btn" data-act="clear-code">Clear</button>` : ''}</td>
@@ -4369,6 +4385,26 @@
       return { cls: 'ok', html: `Part number <strong>${esc(before)}</strong> changed to <strong>${esc(v)}</strong>.` }
     })
   }
+  // The PO a line is on. Typing a PO number puts the line under it (the PO is looked up in MYOB if it isn't loaded yet, and the line is
+  // matched only against that PO's lines); emptying the box goes back to the PO the invoice said.
+  function changeLinePo(key, idx, raw) {
+    return runEdit(ship => {
+      const { inv, ln } = lineIn(ship, key, idx)
+      const v = String(raw).trim()
+      if (!v) {
+        if (!ln.po_manual) return null
+        ln.po = ln.orig_po ?? ''; delete ln.po_manual; delete ln.orig_po
+        return { cls: 'ok', html: `<strong>${esc(ln.code)}</strong> is back on the PO the invoice said.` }
+      }
+      const po = (v.match(/^\D*(\d{4,})\D*$/) || [])[1]
+      if (!po) throw new Error('Enter the PO as a number (at least 4 digits).')
+      const now = String(ln.po || inv.po || '').match(/\d{4,}/g) || []
+      if (ln.po_manual && now.length === 1 && now[0] === po) return null
+      if (!ln.po_manual) ln.orig_po = ln.po ?? ''
+      ln.po = po; ln.po_manual = true
+      return { cls: 'ok', html: `<strong>${esc(ln.code)}</strong> is now under PO <strong>${esc(po)}</strong>.` }
+    })
+  }
   function changePrice(key, idx, raw) {
     return runEdit(ship => {
       const { ln } = lineIn(ship, key, idx)
@@ -4402,6 +4438,7 @@
         if (ln.orig_price !== undefined) ln.price = ln.orig_price
         if (ln.orig_total !== undefined && ln.orig_total !== null) ln.total = ln.orig_total; else retotal(ln)
       }
+      if (ln.po_manual) { ln.po = ln.orig_po ?? ''; delete ln.po_manual; delete ln.orig_po }
       delete ln.orig_code; delete ln.orig_qty; delete ln.orig_price; delete ln.orig_total; delete ln.total_manual
       return { cls: 'ok', html: `<strong>${esc(ln.code)}</strong> is back to what the invoice said.` }
     })
@@ -5333,6 +5370,7 @@
     $('countSearch').focus()
   }
   async function showCountList() {
+    countSearchText = ''   // a fresh visit starts with the whole list (the search stays while the list redraws after a change)
     renderSidebar('count')
     setTop('Shipment Count', 'Choose a shipment to count')
     content.innerHTML = `<div class="empty-state">Loading shipments…</div>`
@@ -5509,7 +5547,9 @@
     setTimeout(finish, 60000)
   }
 
+  let reconSearchText = ''
   async function showReconcileList() {
+    reconSearchText = ''   // a fresh visit starts with the whole list
     renderSidebar('reconcile')
     setTop('Shipment Reconciliation', 'Counts that have been sent through, ready to reconcile')
     content.innerHTML = `<div class="empty-state">Loading shipments…</div>`
@@ -5527,8 +5567,34 @@
       // ones counted before the time was kept have no time, so they are the oldest and go at the bottom (the most recently added first)
       const submitted = s => (s.summary || {}).counted_at || ''
       const byTime = (x, y) => (!submitted(x) !== !submitted(y)) ? (submitted(x) ? -1 : 1) : submitted(y).localeCompare(submitted(x)) || String(y.created_at).localeCompare(String(x.created_at))
-      content.innerHTML = group('Counted: ready to reconcile, last submitted first', data.sort(byTime))
+      content.innerHTML = `<div class="search-row">
+          <input id="reconSearch" type="search" placeholder="Search shipments by PO number (or invoice number, supplier)" autocomplete="off" aria-label="Search shipments">
+          <span class="muted" id="reconSearchN"></span>
+        </div>
+        <div id="reconCards">${group('Counted: ready to reconcile, last submitted first', data.sort(byTime))}</div>
+        <div class="empty-state" id="reconNone" hidden></div>`
       wireCardClicks()
+      // Type or scan a PO number (part of it is enough; invoice numbers and supplier names work too). Enter opens the shipment when only one is left.
+      const cards = [...content.querySelectorAll('#reconCards .ship-card')]
+      const find = () => {
+        const raw = $('reconSearch').value.trim(), terms = raw.toLowerCase().split(/\s+/).filter(Boolean)
+        reconSearchText = $('reconSearch').value
+        const hit = cards.filter(c => terms.every(t => c.dataset.hay.includes(t) || (normCode(t) && c.dataset.norm.includes(normCode(t)))))
+        cards.forEach(c => { c.hidden = !hit.includes(c) })
+        const gt = content.querySelector('#reconCards .group-title'); if (gt) { gt.querySelector('.count').textContent = hit.length; gt.hidden = !hit.length }
+        $('reconSearchN').textContent = terms.length ? `${hit.length} of ${cards.length} shipment${cards.length === 1 ? '' : 's'}${hit.length === 1 ? ' · press Enter to open it' : ''}` : ''
+        $('reconNone').hidden = hit.length > 0 || !terms.length
+        $('reconNone').textContent = `No shipment ready to reconcile matches "${raw}".`
+        return hit
+      }
+      $('reconSearch').value = reconSearchText; find()
+      $('reconSearch').addEventListener('input', find)
+      $('reconSearch').addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { const hit = find(); if (hit.length === 1) location.hash = hit[0].dataset.href.slice(1) }
+        else if (ev.key === 'Escape') { $('reconSearch').value = ''; find() }
+      })
+      $('reconSearch').addEventListener('focus', () => $('reconSearch').select())
+      $('reconSearch').focus()
     } catch (e) { content.innerHTML = `<div class="notice err">${esc(friendlyDbError(e))}</div>` }
   }
 
@@ -5578,13 +5644,13 @@
     const received = sh.status === 'received'
     const onStatement = !!(sh.summary || {}).statement
     setTop(shipName(sh), `Shipment Reconciliation · ${plural(groups.length, 'invoice')} · ${statusTag(sh.status).replace(/<[^>]+>/g, '')}`,
-      `${pickerHtml(sh.id, 'reconcile')}
+      `${findShipHtml()}${pickerHtml(sh.id, 'reconcile')}
        <button class="btn" id="dlBtn">Download reconciliation</button>
        <button class="btn ghost" id="printBtn">Print</button>
        ${sh.status === 'open' ? `<a class="btn ghost" href="#/count/${sh.id}">← Count</a>` : sh.status === 'counted' ? '<button class="btn ghost" id="reopenCountBtn" type="button">Reopen count</button>' : ''}
        <button class="btn ghost" id="statementBtn" type="button" title="${onStatement ? 'Its invoices are on Creditor Statements. Press to take them off.' : 'Add this shipment\'s invoices to Creditor Statements (the shipment is not completed)'}">${onStatement ? 'Take off statement' : 'Send to statement'}</button>
        <button class="btn ${received ? 'ghost' : ''}" id="statusBtn">${received ? 'Reopen shipment' : 'Complete shipment'}</button>`)
-    wirePicker('reconcile')
+    wirePicker('reconcile'); wireShipFind('reconcile')
 
     const chip = (f, label, n, issue) => `<button class="chip ${issue && n ? 'issue' : ''}" data-f="${f}" aria-pressed="false">${label}<b>${n}</b></button>`
     content.innerHTML = `
@@ -5681,7 +5747,9 @@
       extraRows += amountRow('Invoice total (printed on the invoice)', printed)
       extraRows += `<tr class="tot-verdict"><td></td><td colspan="11">${Math.abs(diff) <= 0.015 ? '<span class="tot-ok">&#10003; The line total is the same as the invoice total.</span>' : `<span class="tot-warn">&#10007; The line total is ${esc(reconMoney(Math.abs(diff), cur))} ${diff > 0 ? 'more' : 'less'} than the invoice total.</span>`}</td></tr>`
     }
-    const meta = [g.inv.po ? `PO ${esc(g.inv.po)}` : '', g.inv.invoice_date ? `Invoice date ${esc(fmtDay(g.inv.invoice_date))}` : '', g.inv.invoice_total != null ? `Total ${esc(cur)} ${fmtMoney(g.inv.invoice_total)}` : '', `${plural(ls.length, 'line')}`].filter(Boolean).join(' · ')
+    const linePos = [...new Set(ls.flatMap(l => (l.pos || []).map(p => String(p[0]))))].sort((x, y) => x.localeCompare(y, 'en', { numeric: true }))
+    const poText = linePos.length ? linePos.join(', ') : (g.inv.po || '')
+    const meta = [poText ? `PO ${esc(poText)}` : '', g.inv.invoice_date ? `Invoice date ${esc(fmtDay(g.inv.invoice_date))}` : '', g.inv.invoice_total != null ? `Total ${esc(cur)} ${fmtMoney(g.inv.invoice_total)}` : '', `${plural(ls.length, 'line')}`].filter(Boolean).join(' · ')
     // the invoice as it was uploaded (the PDF or Excel file), to open and check against the lines
     const srcFile = (recon.shipment.files || []).find(f => f.path && f.name === g.inv.source)
     const viewBtn = srcFile ? `<button class="btn ghost inv-view no-print" type="button" data-path="${esc(srcFile.path)}" title="Open the file this invoice was read from (${esc(srcFile.name)})">${/\.pdf$/i.test(srcFile.name) ? 'View invoice' : 'Open invoice file'}</button>` : ''
@@ -5758,7 +5826,7 @@
     const poq = poQtyForLine(l, recon.shipment.po_lines)           // quantity on the PO line(s), or null
     return `<tr class="${esc(l.status)} ${tags.includes('qty') ? 'has-qty-var' : ''} ${tags.includes('freight') ? 'is-freight' : ''}" data-id="${l.id}" data-tags="${tags.join(' ')}">
       <td class="code">${esc(l.stock_code || l.supplier_code)}${showSub ? `<span class="sub">${esc(l.supplier_code)}</span>` : ''}</td>
-      <td>${esc(l.description)}${(l.flags || []).filter(f => /^(Freight charge|Quantity changed in|Part number changed in|Price changed in|Line total changed in|Line added in)/.test(f)).map(f => `<span class="flag ${/^Freight charge/.test(f) ? 'freight' : 'edited'}">${esc(f)}</span>`).join('')}</td>
+      <td>${esc(l.description)}${(l.flags || []).filter(f => /^(Freight charge|Quantity changed in|Part number changed in|Price changed in|Line total changed in|Line added in|PO chosen in Shipment Edit|Not on PO )/.test(f)).map(f => `<span class="flag ${/^Freight charge/.test(f) ? 'freight' : 'edited'}">${esc(f)}</span>`).join('')}</td>
       <td class="po">${esc(poListOf(l)) || '<span class="muted">—</span>'}</td>
       <td class="num col-poq">${poq === null ? '—' : fmtQty(poq)}</td>
       <td class="num"><strong>${fmtQty(l.inv_qty)}</strong></td>
