@@ -1843,6 +1843,24 @@
       (!a.k.date - !b.k.date) || a.k.date.localeCompare(b.k.date) || (a.k.pono - b.k.pono) || (a.k.value - b.k.value) || (a.k.i - b.k.i)).map(x => x.inv)
   }
   
+  // A new invoice is named as the MYOB creditor of the PO it is on (the creditor name in EXO), not as the supplier's own letterhead says
+  // ("GARDNER INC" rather than "Gardner Inc."), so the same supplier is always spelt the same. Only invoices flagged `fresh` (just added) are
+  // renamed, once: saved lines are paired with their invoice by supplier name, so an invoice already in a shipment keeps the name it has.
+  // If no PO was found, or its POs have different creditors, the name the reader gave is kept.
+  function nameInvoicesFromCreditors(invoices, poLines) {
+    for (const inv of invoices) {
+      if (!inv.fresh) continue
+      delete inv.fresh
+      const pos = [...new Set(`${inv.po || ''} ${(inv.lines || []).map(l => l.po || '').join(' ')}`.match(/\d{4,}/g) || [])]
+      const names = [...new Set((poLines || []).filter(l => pos.includes(String(l.po)) && l.supplier && String(l.supplier).trim()).map(l => String(l.supplier).trim()))]
+      if (names.length !== 1 || names[0] === inv.supplier) continue
+      inv.supplier_read = inv.supplier
+      inv.supplier = names[0]
+      inv.notes = [...(inv.notes || []), `Named as the MYOB creditor "${names[0]}" (the invoice says "${inv.supplier_read}").`]
+    }
+    return invoices
+  }
+  
   // The invoice's amount for a saved line. A freight line is the freight amount. Otherwise it is the amount printed on the
   // invoice line (suppliers work it out from an unrounded unit price, so it can differ by a few cents from qty x the printed
   // price, and those cents add up over a long invoice). It falls back to qty x price if the invoice line isn't there or its
@@ -3515,6 +3533,7 @@
     const invoices = ship.invoices, poLines = ship.po_lines, files = ship.files
     const problems = (ship.problems || []).filter(p => p.name !== 'MYOB')
     await addMyobLookup(invoices, poLines, files, problems, say)
+    nameInvoicesFromCreditors(invoices, poLines)   // a newly added invoice takes the MYOB creditor's name
     const result = matchShipment(invoices, poLines)
     const summary = summarise(invoices, poLines, result)
     const oldLines = await fetchLines(ship.id, true)
@@ -3637,6 +3656,7 @@
         const covered = new Set(newPoLines.map(l => l.po))
         ship.po_lines = ship.po_lines.filter(l => !covered.has(l.po)).concat(newPoLines)
       }
+      newInvoices.forEach(i => { i.fresh = true })   // syncShipment names these as the MYOB creditor once their POs are found
       ship.invoices = [...ship.invoices, ...newInvoices]
       ship.files = [...ship.files, ...newFiles]
       ship.problems = [...(ship.problems || []), ...problems]
