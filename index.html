@@ -362,6 +362,7 @@
   .inv-card tr.tot-adjust td { background: #FFFBF3; border-top: 1px solid var(--border); font-weight: 400; }
   .adjust-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
   .adjust-title { font-size: 12px; font-weight: 700; color: var(--warn); }
+  .adjust-live { font-size: 13px; font-weight: 700; color: var(--navy); }
   .adjust-form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .adjust-form select, .adjust-form input { padding: 6px 8px; font-size: 13px; }
   .adjust-form input { width: 100px; }
@@ -1230,7 +1231,7 @@
           if (parts.length && inv.invoice_total != null && Math.abs(explained - inv.invoice_total) <= 0.015 && Math.abs(sum - band.orderTotal) <= 0.015) {
             adjust = Math.round(parts.reduce((a, [, v]) => a + v, 0) * 100) / 100
             inv.adjust = { amount: adjust, label: parts.map(([l]) => l).join(' and ') }
-            inv.notes.push(`The lines add up to the order total of ${band.orderTotal.toFixed(2)}. ${parts.map(([l, v]) => v < 0 ? `A ${l} of ${Math.abs(v).toFixed(2)} is taken off it` : `${l[0].toUpperCase()}${l.slice(1)} of ${Math.abs(v).toFixed(2)} is added`).join(', ')}, so the invoice total is ${inv.invoice_total.toFixed(2)}.`)
+            inv.notes.push(`The lines add up to the order total of ${band.orderTotal.toFixed(2)}. ${parts.map(([l, v]) => v < 0 ? `A ${l} of ${Math.abs(v).toFixed(2)}${l === 'discount' && parts.length === 1 && band.orderTotal > 0 ? ` (${Number((Math.abs(v) / band.orderTotal * 100).toFixed(2))}%)` : ''} is taken off it` : `${l[0].toUpperCase()}${l.slice(1)} of ${Math.abs(v).toFixed(2)} is added`).join(', ')}, so the invoice total is ${inv.invoice_total.toFixed(2)}.`)
           }
         }
         // Safety net: the lines add up to the Order Total printed on the invoice, but the Total is different and the figures between them
@@ -1796,7 +1797,7 @@
         XLSX.utils.sheet_add_aoa(ws, [[], ['', '', '', 'Total', '', { t: 'n', f: `SUM(F${first}:F${last})`, v: totalValue, z: '#,##0.00' }, { t: 'n', f: `SUM(G${first}:G${last})`, v: rows.reduce((a, r) => a + r.qty, 0) }, { t: 'n', f: `SUM(H${first}:H${last})` }]], { origin: `A${last + 1}` })
         const { adj, printed } = invoiceExtras(inv)
         const more = []
-        if (adj) more.push(['', '', '', `${adj.amount < 0 ? 'Less' : 'Plus'} ${adj.label}`, '', { t: 'n', v: adj.amount, z: '#,##0.00' }])
+        if (adj) more.push(['', '', '', adjustLabel(adj, Math.round(rows.reduce((a, r) => a + (r.amount || 0), 0) * 100) / 100), '', { t: 'n', v: adj.amount, z: '#,##0.00' }])
         if (printed !== null) more.push(['', '', '', 'Invoice total (printed)', '', { t: 'n', v: printed, z: '#,##0.00' }])
         if (more.length) XLSX.utils.sheet_add_aoa(ws, more, { origin: `A${last + 3}` })
       }
@@ -1914,6 +1915,17 @@
     if (line.inv_price === null || line.inv_price === undefined || line.inv_price === '') return null
     return Math.round((+line.inv_qty || 0) * +line.inv_price * 100) / 100
   }
+  // A discount as a percentage of the goods total it came off ("4%"; up to 2 decimals). Only for a plain discount: charges, tax and a
+  // mix of discount and charges have no single percentage. '' when it can't be worked out.
+  function discountPercentText(adj, goodsTotal) {
+    if (!adj || !(adj.amount < 0) || !/^discount$/i.test(String(adj.label || '').trim()) || !(+goodsTotal > 0)) return ''
+    return `${Number((Math.abs(adj.amount) / +goodsTotal * 100).toFixed(2))}%`
+  }
+  // "Less discount (4%)" / "Plus freight": the label of the amount outside the lines, with the discount's percentage where there is one
+  const adjustLabel = (adj, goodsTotal) => {
+    const pct = discountPercentText(adj, goodsTotal)
+    return `${adj.amount < 0 ? 'Less' : 'Plus'} ${adj.label}${pct ? ` (${pct})` : ''}`
+  }
   // What goes under an invoice's lines: the charge or discount outside the lines (GST, packing, a % discount) and the printed total
   function invoiceExtras(inv) {
     const adj = inv && inv.adjust && inv.adjust.amount ? { amount: +inv.adjust.amount, label: inv.adjust.label || (inv.adjust.amount < 0 ? 'discount' : 'charges') } : null
@@ -1980,7 +1992,7 @@
       const { adj, printed } = invoiceExtras(inv)
       const at = label => { const r = new Array(NCOL).fill(null); r[4] = label; return r }
       let adjRow = null, printedRow = null
-      if (adj) { aoa.push(at(`${adj.amount < 0 ? 'Less' : 'Plus'} ${adj.label}`)); adjRow = aoa.length; custom.push([adjRow, adj.amount]) }
+      if (adj) { aoa.push(at(adjustLabel(adj, Math.round(ls.reduce((t, l) => t + (lineAmountFor(l, invoices) || 0), 0) * 100) / 100))); adjRow = aoa.length; custom.push([adjRow, adj.amount]) }
       if (printed !== null) {
         aoa.push(at('Invoice total (printed)')); printedRow = aoa.length; custom.push([printedRow, printed])
         aoa.push(at('Lines and extras less printed total (0 = same)')); custom.push([aoa.length, null, `ROUND(L${totalRow}${adjRow ? `+L${adjRow}` : ''}-L${printedRow},2)`, [totalRow, adjRow, printedRow]])
@@ -4057,6 +4069,14 @@
         if (amount !== null) saveOurCode(key, idx, r.ln.our_code, { amount })
       }
     })
+    // typing a discount shows what percentage of the line total it is
+    const showPct = ev => {
+      const row = ev.target.closest('tr.tot-adjust'); if (!row || !ev.target.matches('[data-adj]')) return
+      const live = row.querySelector('.adjust-live'), goods = +live.dataset.goods
+      const v = parseFloat(row.querySelector('[data-adj="amount"]').value), kind = row.querySelector('[data-adj="kind"]').value
+      live.textContent = kind === 'discount' && v > 0 && goods > 0 ? `${Number((v / goods * 100).toFixed(2))}% of the line total` : ''
+    }
+    body.addEventListener('input', showPct); body.addEventListener('change', showPct)
     body.addEventListener('keydown', ev => {
       if (ev.key !== 'Enter' || !ev.target.closest('td.ourcode input, td.partno input, td.qtycell input, td.pricecell input, td.totalcell input, td.pocell input')) return
       ev.preventDefault()
@@ -4106,7 +4126,7 @@
     }
     return `<tfoot>
       <tr><td></td><td>Lines add up to</td><td class="num">${fmtQty(qtyTotal)}</td><td></td><td class="num">${money(sum)}</td><td colspan="3">${unpriced ? `<span class="muted">${plural(unpriced, 'line')} with no price</span>` : ''}</td></tr>
-      ${adj ? `<tr class="tot-sub"><td></td><td>${adj.amount < 0 ? 'Less' : 'Plus'} ${esc(adj.label)}</td><td></td><td></td><td class="num">${money(adj.amount)}</td><td colspan="3"></td></tr>` : ''}
+      ${adj ? `<tr class="tot-sub"><td></td><td>${esc(adjustLabel(adj, sum))}</td><td></td><td></td><td class="num">${money(adj.amount)}</td><td colspan="3"></td></tr>` : ''}
       <tr><td></td><td>Invoice total (printed on the invoice)</td><td></td><td></td><td class="num">${printed === null || printed === undefined || printed === '' ? '&mdash;' : money(printed)}</td><td colspan="3"></td></tr>
       <tr class="tot-verdict"><td></td><td colspan="7">${verdict}</td></tr>
       ${adjustRowHtml(inv, adj, printed, expected, money)}
@@ -4122,6 +4142,7 @@
     const kind = !adj ? 'discount' : adj.amount < 0 ? 'discount' : /freight/i.test(adj.label) ? 'freight' : /tax/i.test(adj.label) ? 'tax' : 'charge'
     const opt = (v, t) => `<option value="${v}" ${kind === v ? 'selected' : ''}>${t}</option>`
     const newTotal = adj ? adj.amount + diff : diff
+    const goods = Math.round((expected - (adj ? adj.amount : 0)) * 100) / 100   // the lines' total before the discount or charge
     return `<tr class="tot-adjust" data-inv="${esc(invKey(inv))}"><td></td><td colspan="7">
       <div class="adjust-box">
         <span class="adjust-title">Discount or charge that is on the invoice total but not in its lines</span>
@@ -4130,8 +4151,9 @@
           <input type="number" min="0" step="any" data-adj="amount" value="${adj ? esc(Math.abs(adj.amount).toFixed(2)) : ''}" placeholder="Amount" aria-label="Amount">
           <button class="btn" type="button" data-act="save-adjust">${adj ? 'Save' : 'Add'}</button>
           ${adj ? '<button class="link-btn danger" type="button" data-act="remove-adjust">Remove</button>' : ''}
-          ${mismatch ? `<button class="btn ghost" type="button" data-act="adjust-diff" data-amount="${newTotal}">Use the difference (${esc(money(Math.abs(diff)))} ${diff < 0 ? 'discount' : 'charge'})</button>` : ''}
+          ${mismatch ? `<button class="btn ghost" type="button" data-act="adjust-diff" data-amount="${newTotal}">Use the difference (${esc(money(Math.abs(diff)))} ${diff < 0 ? `discount${goods > 0 ? `, ${Number((Math.abs(diff) / goods * 100).toFixed(2))}%` : ''}` : 'charge'})</button>` : ''}
         </span>
+        <span class="adjust-live" data-goods="${goods}">${esc(discountPercentText(adj, goods) ? `${discountPercentText(adj, goods)} of the line total` : '')}</span>
       </div></td></tr>`
   }
   function editRowHtml(r) {
@@ -4321,8 +4343,10 @@
       if (!adj || !adj.amount) { delete inv.adjust; return { cls: 'ok', html: `The amount outside the lines was removed from invoice <strong>${esc(inv.invoice_no)}</strong>.` } }
       const amount = Math.round(adj.amount * 100) / 100
       inv.adjust = { amount, label: adj.label, manual: true }
-      inv.notes.push(`${adj.label[0].toUpperCase()}${adj.label.slice(1)} of ${Math.abs(amount).toFixed(2)} was entered in Shipment Edit.`)
-      return { cls: 'ok', html: `${esc(adj.label[0].toUpperCase() + adj.label.slice(1))} of <strong>${esc(Math.abs(amount).toFixed(2))}</strong> ${amount < 0 ? 'taken off' : 'added to'} invoice <strong>${esc(inv.invoice_no)}</strong>.` }
+      const goods = inv.lines.filter(l => !l.removed).reduce((t, l) => t + (lineAmount(l) || 0), 0)
+      const pct = discountPercentText({ amount, label: adj.label }, goods)
+      inv.notes.push(`${adj.label[0].toUpperCase()}${adj.label.slice(1)} of ${Math.abs(amount).toFixed(2)}${pct ? ` (${pct})` : ''} was entered in Shipment Edit.`)
+      return { cls: 'ok', html: `${esc(adj.label[0].toUpperCase() + adj.label.slice(1))} of <strong>${esc(Math.abs(amount).toFixed(2))}</strong>${pct ? ` (${esc(pct)})` : ''} ${amount < 0 ? 'taken off' : 'added to'} invoice <strong>${esc(inv.invoice_no)}</strong>.` }
     })
   }
   async function runEdit(mutate) {
@@ -5741,7 +5765,7 @@
     const { adj, printed } = invoiceExtras(g.inv)
     const amountRow = (label, amt, cls = '') => `<tr class="${cls}"><td></td><td>${esc(label)}</td><td colspan="7"></td><td class="num">${esc(reconMoney(amt, cur))}</td><td colspan="2"></td></tr>`
     let extraRows = ''
-    if (adj) extraRows += amountRow(`${adj.amount < 0 ? 'Less' : 'Plus'} ${adj.label}`, adj.amount, 'tot-sub')
+    if (adj) extraRows += amountRow(adjustLabel(adj, lineSum), adj.amount, 'tot-sub')
     if (printed !== null) {
       const diff = Math.round((lineSum + (adj ? adj.amount : 0) - printed) * 100) / 100
       extraRows += amountRow('Invoice total (printed on the invoice)', printed)
