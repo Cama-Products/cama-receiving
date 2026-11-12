@@ -4091,7 +4091,8 @@
   function editCardHtml(g) {
     const inv = g.inv
     const cur = inv.currency || ''
-    const meta = [inv.po ? `PO ${esc(inv.po)}` : '', inv.invoice_date ? `Invoice date ${esc(fmtDay(inv.invoice_date))}` : '', plural(inv.lines.filter(l => !l.removed).length, 'line')].filter(Boolean).join(' · ')
+    const readBy = inv.reader ? (/azure/i.test(inv.reader) ? 'Read by Azure' : `Read by the ${esc(inv.reader)} reader`) : ''
+    const meta = [inv.po ? `PO ${esc(inv.po)}` : '', inv.invoice_date ? `Invoice date ${esc(fmtDay(inv.invoice_date))}` : '', plural(inv.lines.filter(l => !l.removed).length, 'line'), readBy].filter(Boolean).join(' · ')
     return `<details class="inv-card" open data-key="${esc(invKey(inv))}">
       <summary><div><div class="inv-title">Invoice ${esc(inv.invoice_no)} · ${esc(inv.supplier)}</div><div class="inv-sub">${meta}</div></div>
         <button class="btn ghost add-line" type="button" data-act="add-line" data-key="${esc(invKey(inv))}">+ Add line</button></summary>
@@ -4388,11 +4389,12 @@
     return runEdit(ship => {
       const { ln } = lineIn(ship, key, idx)
       const n = parseFloat(raw)
-      if (!Number.isFinite(n) || n <= 0) throw new Error('The quantity must be a number greater than 0.')
+      if (!Number.isFinite(n) || n < 0) throw new Error('The quantity must be a number, 0 or more. (0 means none were supplied: the line becomes a back order.)')
       if (n === +ln.qty) return null
       const before = ln.qty
       capture(ln)
       ln.qty = n; settle(ln); uncapture(ln)
+      if (n === 0) return { cls: 'ok', html: `Quantity for <strong>${esc(ln.code)}</strong> changed from ${fmtQty(before)} to <strong>0</strong>: none were supplied, so it is a back order. It is left out of the count and reconciliation, and stays on order.` }
       return { cls: 'ok', html: `Quantity for <strong>${esc(ln.code)}</strong> changed from ${fmtQty(before)} to <strong>${fmtQty(n)}</strong>.` }
     })
   }
