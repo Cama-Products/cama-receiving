@@ -2939,8 +2939,92 @@
     },
   }
   
+  // ============================================================
+  // Niterra NGK (Niterra Australia Pty Ltd): spark plugs, Australian dollars. A line has Line, Customer Part# (our own part number, blank on
+  // this invoice), BP Catalog# (NGK's part number), Description, Ordered, Back Order, Supplied, UoM, Unit Price and Total ex GST. The quantity is
+  // the SUPPLIED column (the last of the three numbers; the middle one is what is on back order). A line with nothing supplied is a back order and
+  // is left out. "Cust Order No" is the PO. GST, if any, is carried outside the lines. "Final Totals On Supplied Qty" is checked against the lines.
+  // ============================================================
+  const NGK = {
+    name: 'Niterra NGK', short: 'NGK',
+    // the name Niterra is only on page 2 (the first page has a logo), so the layout is what is recognised
+    detect: t => /BP Catalog#/.test(t) && /Tax Invoice No:/.test(t) && /Cust Order No:/.test(t),
+    parse(pages, source) {
+      const txt = pages.map(p => p.text).join('\n'), flat = txt.replace(/\s+/g, ' ')
+      const inv = {
+        supplier: this.name, po: (flat.match(/Cust Order No:\s*(\d{4,})/) || [])[1] || '',
+        invoice_no: (flat.match(/Tax Invoice No:\s*(\d+)/) || [])[1] || '', invoice_date: parseDate((flat.match(/\bDate:\s*(\d{1,2}\/\d{1,2}\/\d{4})/) || [])[1]),
+        due_date: parseDate((flat.match(/Due Date:\s*(\d{1,2}\/\d{1,2}\/\d{4})/) || [])[1]), currency: (flat.match(/Total Due \(([A-Z]{3})\)/) || [])[1] || 'AUD',
+        invoice_total: null, lines: [], notes: [], source,
+      }
+      const COL = colsOf(['no', 55], ['cust', 122], ['cat', 215], ['desc', 340], ['ord', 385], ['bo', 420], ['sup', 445], ['uom', 470], ['price', 520], ['total', Infinity])
+      let skipped = 0, gst = 0
+      for (const page of pages) {
+        let inTable = false
+        for (const line of page.lines) {
+          if (/^Line\b/.test(line.text) && /Customer Part#/.test(line.text)) { inTable = true; continue }
+          if (/Total Due/.test(line.text)) { const v = usNum(lastItem(line)); if (v !== null) inv.invoice_total = v }
+          else if (/Total GST/.test(line.text)) { const v = usNum(lastItem(line)); if (v) gst = v }
+          if (/Final Totals|Sub Total|Page \d+ of \d+/.test(line.text) && !/^\d/.test(line.text)) { if (/Final Totals|Sub Total/.test(line.text)) inTable = false }
+          if (!inTable) continue
+          const c = cellsOf(line, COL)
+          const qty = usNum(c.sup), total = usNum(c.total)
+          if (/^\d+$/.test(c.no || '') && c.cat && qty !== null && total !== null) {
+            if (!qty) { skipped++; continue }   // nothing supplied: all on back order
+            addLine(inv, { code: c.cat, our_code: c.cust || '', desc: c.desc || '', qty, price: usNum(c.price), total })
+          }
+        }
+      }
+      if (skipped) inv.notes.push(`${skipped} line${skipped === 1 ? '' : 's'} with nothing supplied (all on back order) ${skipped === 1 ? 'was' : 'were'} left out.`)
+      const printedPieces = usNum((flat.match(/Final Totals On Supplied Qty:\s*([\d,]+)/) || [])[1])
+      const pieces = inv.lines.reduce((t, l) => t + l.qty, 0)
+      if (printedPieces !== null && printedPieces !== pieces) inv.notes.push(`The invoice says ${printedPieces} supplied in all, but the lines add up to ${pieces}.`)
+      return [verify(inv, { extra: gst, extraLabel: 'GST' })]
+    },
+  }
+  
+  // ============================================================
+  // Atex Co., Ltd. (Japan) proforma invoices, in yen. A line has Model No. (Atex's part number), Descriptions, Q'ty, U/Price and Amount (¥2,058).
+  // The courier charge is a row of its own at the end of the list with no model number: "PO No: 32393  1  ¥9,600  ¥9,600" followed by the parcel size
+  // and "Courier CHG". That row gives the PO, and its amount is carried as an amount outside the lines (so the lines add up to the total with it).
+  // Fullwidth brackets and x in the descriptions are tidied ("Collar (14x21x7)"). "By DHL on November 13, 2026" is kept as a note.
+  // ============================================================
+  const ATEX = {
+    name: 'Atex', short: 'Atex',
+    detect: t => /Atex Co\., Ltd\./i.test(t) && /PROFORMA/i.test(t) && /Model No\./.test(t),
+    parse(pages, source) {
+      const flat = pages.map(p => p.text).join('\n').replace(/\s+/g, ' ')
+      const yen = t => usNum(String(t ?? '').replace(/[¥￥]/g, ''))
+      const tidy = d => String(d || '').replace(/（/g, '(').replace(/）/g, ')').replace(/[ｘ×]/g, 'x').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/(\d)\s*x\s*(\d)/g, '$1x$2').replace(/\s+/g, ' ').trim()
+      const inv = {
+        supplier: this.name, po: '', invoice_no: (flat.match(/Ref\. No\.:\s*([A-Z0-9-]+)/) || [])[1] || '',
+        invoice_date: parseDate(((flat.match(/Date Issued:\s*(\d{1,2})-([A-Za-z]{3})-(\d{2,4})/) || []).slice(1).map((x, i) => i === 2 && x.length === 2 ? `20${x}` : x)).join('-') || undefined),
+        due_date: '', currency: /¥|￥/.test(flat) ? 'JPY' : '', invoice_total: null, lines: [], notes: [], source,
+      }
+      const COL = colsOf(['model', 125], ['desc', 355], ['qty', 400], ['price', 505], ['amt', Infinity])
+      let cur = null, courier = 0
+      for (const page of pages) {
+        let inTable = false
+        for (const line of page.lines) {
+          if (/Model No\./.test(line.text) && /Amount/.test(line.text)) { inTable = true; continue }
+          if (/^TOTAL\b/.test(line.text)) { const v = yen(lastItem(line)); if (v !== null) inv.invoice_total = v; inTable = false; cur = null; continue }
+          if (!inTable) continue
+          const c = cellsOf(line, COL), qty = usNum(c.qty), amt = yen(c.amt)
+          if (c.model && qty !== null && amt !== null) {
+            cur = addLine(inv, { code: c.model, our_code: '', desc: tidy(c.desc), qty, price: yen(c.price), total: amt })
+          } else if (!c.model && qty !== null && amt !== null && /^PO No:?\s*(\d{4,})/i.test(c.desc || '')) {
+            inv.po = (c.desc.match(/(\d{4,})/) || [])[1]; courier += amt; cur = null   // the courier charge row, which carries the PO
+          } else if (!c.model && c.desc && /^By\s+\w+ on /i.test(c.desc)) inv.notes.push(`${tidy(c.desc)}.`)
+        }
+      }
+      for (const l of inv.lines) l.po = inv.po   // the PO is on the courier row, below the lines
+      if (courier) inv.notes.push(`The courier charge of ¥${courier.toLocaleString('en-NZ')} is carried outside the lines.`)
+      return [verify(inv, { extra: courier, extraLabel: 'courier charge' })]
+    },
+  }
+  
   // ---- registered after the readers that are already in core (ratioparts, Rotary; BBT, HTS, Rotary list) ----
-  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF, PROLUBE, RATIOPARTS)
+  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF, PROLUBE, RATIOPARTS, NGK, ATEX)
   EXCEL_PROFILES.push(PRORING, TOPENGINE)
   
 })()
