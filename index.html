@@ -471,6 +471,9 @@
   .stmt-cleared { border-top: 1px solid var(--border); padding: 8px 16px 12px; }
   .stmt-cleared summary { cursor: pointer; font-weight: 700; color: var(--slate); padding: 4px 0; }
   .stmt-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  #netBanner { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 300; max-width: 92vw; background: #7A1D14; color: #fff; padding: 10px 14px; border-radius: 10px; font-size: 14px; box-shadow: 0 10px 24px rgba(0,0,0,.35); }
+  #netBanner button { margin-left: 10px; padding: 3px 10px; border: 1px solid rgba(255,255,255,.6); border-radius: 6px; background: transparent; color: #fff; cursor: pointer; font: inherit; }
+  @media print { #netBanner { display: none; } }
   .ship-note-box { margin: 18px 0 0; padding: 14px 18px; background: #fff; border: 1px solid var(--border); border-radius: 10px; }
   .ship-note-box label { display: block; margin-bottom: 8px; }
   .ship-note-box .muted { font-size: 13px; margin-left: 6px; }
@@ -524,6 +527,7 @@
 
 <div id="labelPrint" aria-hidden="true"></div>
 <div id="stmtPrint" aria-hidden="true"></div>
+<div id="netBanner" role="alert" hidden></div>
 <div id="appShell" class="shell" style="display:none;">
   <div class="sidebar" id="sidebar"></div>
   <div class="main">
@@ -1079,7 +1083,8 @@
   
   const RATIOPARTS = {
     name: 'ratioparts Ersatzteile-Vertriebs GmbH',
-    detect: firstPageText => /ratioparts/i.test(firstPageText),
+    // the customs layout (Pos, LTA, Itemno., tariff number, country); the plainer layout (Pos, Itemno., Description, Quantity...) has its own reader in suppliers.mjs
+    detect: firstPageText => /ratioparts/i.test(firstPageText) && !/Pos\s+Itemno\./.test(firstPageText),
     parse(pages, source) {
       const invoices = new Map()
       pages.forEach((page, pi) => {
@@ -2846,8 +2851,96 @@
     },
   }
   
+  // ============================================================
+  // Prolube (Lidomont Pty Ltd T/As Prolube, Australia): oils made for Cama. The Code on a line is Cama's own stock code (98-9700), so it is
+  // both the part number and our code. No PO number is printed (the invoice says "ORDERED 27/08/26" in its comments: the PO is entered in the
+  // PO number box when the invoice is added). Australian dollars; GST is carried outside the lines if it isn't 0.00. The comments under the
+  // lines (pricing, where it was made, the order date) and the total weight are kept as a note.
+  // ============================================================
+  const PROLUBE = {
+    name: 'Prolube', short: 'Prolube',
+    detect: t => /Lidomont Pty Ltd T\/As Prolube|prolube\.com\.au/i.test(t) && /Tax Invoice\s+\S+/.test(t) && /\bGross\b/.test(t),
+    parse(pages, source) {
+      const txt = pages.map(p => p.text).join('\n'), flat = txt.replace(/\s+/g, ' ')
+      const inv = {
+        supplier: this.name, po: '', invoice_no: (flat.match(/Tax Invoice\s+([A-Z0-9-]+)/) || [])[1] || '',
+        invoice_date: parseDate((flat.match(/Date\s+(\d{1,2}-[A-Za-z]{3}-\d{4})/) || [])[1]), due_date: '',
+        currency: /AU\$/.test(flat) ? 'AUD' : 'AUD', invoice_total: null, lines: [], notes: [], source,
+      }
+      const COL = colsOf(['code', 150], ['desc', 395], ['qty', 445], ['price', 520], ['gross', 670], ['gst', 740], ['total', Infinity])
+      let cur = null, gst = 0
+      const comments = []
+      for (const page of pages) {
+        let inTable = false, ended = false
+        for (const line of page.lines) {
+          if (/\bCode\b/.test(line.text) && /\bDescription\b/.test(line.text) && /\bGross\b/.test(line.text)) { inTable = true; continue }
+          if (/Total Incl GST/.test(line.text)) { const v = usNum(lastItem(line)); if (v !== null) inv.invoice_total = v }
+          else if (/^GST\b|\sGST\s+[\d,]+\.\d\d\s*$/.test(line.text) && !/Total/.test(line.text)) { const g = line.items.filter(i => i.x > 740).map(i => usNum(i.str)).find(v => v !== null); if (g) gst = g }
+          if (/Proven Protection|Retention of Title|Remittance from/.test(line.text)) { inTable = false; ended = true }
+          if (!inTable || ended) continue
+          const c = cellsOf(line, COL)
+          const qty = usNum(c.qty), total = usNum(c.total)
+          if (c.code && qty !== null && total !== null) {
+            if (!qty) { cur = null; continue }
+            cur = addLine(inv, { code: c.code, our_code: c.code, desc: c.desc || '', qty, price: usNum(c.price), total })
+          } else if (cur && !c.code && c.desc && !c.qty && !c.total) appendDesc(cur, c.desc)
+          else if (c.code && !c.qty && !c.total && !c.desc) { comments.push(c.code); cur = null }   // the comments under the lines
+        }
+      }
+      const weight = (flat.match(/Total Weight in Kgs\s+([\d,]+\.?\d*)/) || [])[1]
+      const extraNotes = [...comments.map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean), weight ? `Total weight ${weight} kg` : ''].filter(Boolean)
+      if (extraNotes.length) inv.notes.push(`Invoice comments: ${extraNotes.join('. ')}.`)
+      return [verify(inv, { extra: gst, extraLabel: 'GST' })]
+    },
+  }
+  
+  // ============================================================
+  // ratioparts Ersatzteile-Vertriebs GmbH (Germany), euro, numbers written 1.234,56 and dates 17.09.26. A line has Pos, Itemno. (ratioparts' own
+  // number), description, quantity ("6 pc.(1)"), unit price, discount % and the amount (after the discount). Under it come the rest of the
+  // description and then a row with Cama's own article number (15-14852) and the EAN barcode (4023055937844): that is our code, and the EAN is kept
+  // as an alternative code (it can be scanned). "External Document No.: #32021" is the PO. VAT, if any, is carried outside the lines.
+  // ============================================================
+  const RATIOPARTS = {
+    name: 'ratioparts Ersatzteile-Vertriebs GmbH', short: 'Ratioparts',   // the same supplier name as the customs-layout reader in core.mjs
+    detect: t => /ratioparts Ersatzteile-Vertriebs GmbH/i.test(t) && /Pos\s+Itemno\./.test(t),
+    parse(pages, source) {
+      const txt = pages.map(p => p.text).join('\n'), flat = txt.replace(/\s+/g, ' ')
+      const day = raw => { const m = String(raw || '').match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/); return m ? parseDate(`${m[1]}/${m[2]}/${m[3].length === 2 ? 2000 + +m[3] : m[3]}`) : '' }
+      const inv = {
+        supplier: this.name, po: (flat.match(/External Document No\.:\s*#?(\d{4,})/) || flat.match(/Reference No\.:\s*#?(\d{4,})/) || [])[1] || '',
+        invoice_no: (flat.match(/Invoice No\.:\s*(\d+)/) || [])[1] || '', invoice_date: day((flat.match(/Document Date:\s*([\d.]+)/) || [])[1]),
+        due_date: day((flat.match(/Due Date:\s*([\d.]+)/) || [])[1]), currency: (flat.match(/Total\s+([A-Z]{3})\s+(?:without|incl)/) || [])[1] || 'EUR',
+        invoice_total: null, lines: [], notes: [], source,
+      }
+      const COL = colsOf(['pos', 50], ['item', 115], ['desc', 268], ['ean', 296], ['qty', 312], ['unit', 380], ['vat', 425], ['price', 470], ['disc', 525], ['amt', Infinity])
+      let cur = null, exVat = null
+      for (const page of pages) {
+        let inTable = false
+        for (const line of page.lines) {
+          if (/^Pos\b/.test(line.text) && /Itemno\./.test(line.text)) { inTable = true; continue }
+          const tot = /Total\s+[A-Z]{3}\s+(without|incl)/.exec(line.text)
+          if (tot) { const v = euNum(lastItem(line)); if (tot[1] === 'incl') inv.invoice_total = v; else exVat = v; inTable = false; cur = null; continue }
+          if (!inTable) continue
+          const c = cellsOf(line, COL)
+          const qty = euNum(c.qty), amt = euNum(c.amt)
+          if (/^\d+$/.test(c.pos || '') && c.item && qty !== null && amt !== null) {
+            const hasDisc = euNum(c.disc) > 0
+            // like the customs-layout reader, a trailing "/0" on ratioparts' number is dropped (125570001/0 is 125570001); the number as printed is kept as an alternative
+            const bare = c.item.replace(/\/\d+$/, '').toUpperCase()
+            cur = addLine(inv, { code: bare, our_code: '', alt_codes: bare !== c.item ? [c.item] : [], desc: c.desc || '', qty, price: hasDisc && qty ? Math.round(amt / qty * 10000) / 10000 : euNum(c.price), total: amt })
+          } else if (cur && !c.pos && !c.item) {
+            if (/^\d{8,14}$/.test(c.ean || '') && c.desc) { cur.our_code = c.desc; cur.alt_codes = [...cur.alt_codes, c.ean]; cur = null }   // Cama's article number and the EAN
+            else if (c.desc) appendDesc(cur, c.desc)
+          }
+        }
+      }
+      const vat = exVat !== null && inv.invoice_total !== null ? Math.round((inv.invoice_total - exVat) * 100) / 100 : 0
+      return [verify(inv, { extra: vat, extraLabel: 'VAT' })]
+    },
+  }
+  
   // ---- registered after the readers that are already in core (ratioparts, Rotary; BBT, HTS, Rotary list) ----
-  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF)
+  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF, PROLUBE, RATIOPARTS)
   EXCEL_PROFILES.push(PRORING, TOPENGINE)
   
 })()
@@ -2958,7 +3051,7 @@
       if (pin.length < 6) { stepError = 'PIN must be 6 digits'; return renderPinEntry() }
       renderPinEntry(true)
       const { data, error } = await supabase.auth.signInWithPassword({ email: fakeEmail(staffno), password: pin })
-      if (error) { stepError = 'Staff number or PIN not recognised. Try again.'; pin = ''; return renderPinEntry() }
+      if (error) { stepError = isNetworkError(error.message) ? "Can't reach the server. Check the internet connection and try again." : 'Staff number or PIN not recognised. Try again.'; pin = ''; return renderPinEntry() }
       return enterApp(data.user)
     } else if (pin.length < 6) pin += key
     renderPinEntry()
@@ -3080,8 +3173,25 @@
     if (error || !data) throw new Error(error?.message || 'This shipment no longer exists.')
     return data
   }
+  // "TypeError: Failed to fetch" (Safari: "Load failed") means the browser could not reach the server at all: a connection problem, not a problem
+  // with the data. Say so, and say what to check.
+  const isNetworkError = m => /failed to fetch|networkerror|network request failed|load failed|fetch failed|failed to send a request/i.test(String(m))
+  const NETWORK_HELP = "Can't reach the server. This is a connection problem, not a problem with your data. Check the internet connection and press F5 to try again. If it keeps happening on every screen, the Supabase project may be paused (a free project pauses after a week unused: open supabase.com, find the project and press Restore), or a VPN, firewall or ad-blocker may be blocking supabase.co, cdn.jsdelivr.net or cdn.sheetjs.com."
+  // A lost connection during an action that shows no message of its own: a banner that hides itself
+  let netBannerTimer = null
+  function showNetBanner() {
+    const b = document.getElementById('netBanner'); if (!b) return
+    b.hidden = false
+    b.innerHTML = 'Connection problem: the server could not be reached. Check the internet and press F5. <button type="button" id="netBannerX">OK</button>'
+    document.getElementById('netBannerX').onclick = () => { b.hidden = true }
+    clearTimeout(netBannerTimer); netBannerTimer = setTimeout(() => { b.hidden = true }, 15000)
+  }
+  window.addEventListener('unhandledrejection', ev => { if (isNetworkError(ev.reason && ev.reason.message || ev.reason)) showNetBanner() })
+  window.addEventListener('offline', showNetBanner)
+  window.addEventListener('online', () => { const b = document.getElementById('netBanner'); if (b) b.hidden = true })
   const friendlyDbError = e => {
     const m = String(e?.message || e)
+    if (isNetworkError(m)) return `${NETWORK_HELP} (${m})`
     return /does not exist|schema cache|could not find/i.test(m)
       ? `The database needs the latest update. Run migration_2.sql in the Supabase SQL Editor, then reload. (${m})`
       : m
@@ -3334,7 +3444,7 @@
     : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16))
 
   async function invokeError(error) {
-    try { const body = await error.context.json(); return body.error || error.message } catch { return error.message }
+    try { const body = await error.context.json(); return body.error || error.message } catch { return isNetworkError(error.message) ? `Couldn't reach the invoice reader (Azure): ${NETWORK_HELP}` : error.message }
   }
 
   // Read one file. Returns {kind, invoices, po_lines, summary}
