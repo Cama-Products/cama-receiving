@@ -515,6 +515,44 @@
     tr[hidden] { display: table-row !important; }
     td.count input { border: 1px solid #000; }
   }
+
+  /* ============ ORDERING (reorder planning; managers only) ============ */
+  .po-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .po-card { background: var(--paper); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .po-card .big { font-size: 24px; font-weight: 700; }
+  .po-card .lbl { font-size: 12px; color: var(--slate); }
+  .po-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .po-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--paper); }
+  .po-seg button { border: none; background: none; padding: 7px 12px; cursor: pointer; font-size: 13px; color: var(--slate); font-weight: 600; }
+  .po-seg button.on { background: var(--navy); color: #fff; }
+  .po-search { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 240px; font: inherit; }
+  .po-dim { color: var(--slate-dim); }
+  .po-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .po-pill.red { background: var(--err-tint); color: var(--err); }
+  .po-pill.amber { background: var(--warn-tint); color: var(--warn); }
+  .po-pill.green { background: var(--ok-tint); color: var(--ok); }
+  .po-tag { font-size: 11px; font-weight: 600; color: var(--warn); }
+  .po-table { overflow: auto; max-height: calc(100vh - 230px); }
+  .po-table table.grid th { background: #F9FAFC; z-index: 2; }
+  .po-table tr.po-click { cursor: pointer; } .po-table tr.po-click:hover td { background: #F5F7FC; }
+  .po-table tr.po-group td { background: #EEF1F8; font-weight: 700; font-size: 12px; color: var(--navy-dark); }
+  .po-table td.num, .po-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .po-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 18px; }
+  .po-field label { display: block; font-size: 12px; font-weight: 700; color: var(--slate); margin-bottom: 5px; }
+  .po-field .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .po-field input[type=number] { width: 90px; border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font: inherit; }
+  .po-field select { border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; background: #fff; font: inherit; }
+  .po-field .hint { font-size: 11.5px; color: var(--slate-dim); margin-top: 4px; }
+  .btn.po-small { padding: 5px 9px; font-size: 12px; }
+  .btn.po-on { background: var(--navy); color: #fff; border-color: var(--navy); }
+  .po-totals { position: sticky; top: -24px; z-index: 5; background: var(--navy-darker); color: #fff; border-radius: 10px; padding: 10px 16px; display: flex; gap: 22px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  .po-totals b { font-size: 17px; } .po-totals .grow { flex: 1; }
+  .po-gauge { width: 160px; height: 8px; background: rgba(255,255,255,0.2); border-radius: 4px; overflow: hidden; }
+  .po-gauge div { height: 100%; background: var(--lime); }
+  td input.po-qty { width: 74px; text-align: right; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font: inherit; font-variant-numeric: tabular-nums; }
+  td input.po-qty.locked { border-color: var(--navy); background: #EEF1FB; font-weight: 700; }
+  .po-why { font-size: 12px; color: var(--slate); max-width: 260px; }
+  .po-table td:first-child { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -3023,55 +3061,8 @@
     },
   }
   
-  // ============================================================
-  // Gates Australia Pty Ltd: belts, Australian dollars. A line has Line, Product Code (Gates' part number), Quantity, Unit, Unit Price, Per and
-  // Amount (ex GST); under it the description ("6736 POWERATED": the catalogue number first), a GST amount and the country of origin. "CUSTOMER ORDER NO."
-  // is the PO and is printed above each group of lines (it can change part way down). The terms "END OF MONTH + 60 DAYS" give the due date. GST, if
-  // there is any, is carried outside the lines; the grand total is the invoice total.
-  // ============================================================
-  const GATES = {
-    name: 'Gates Australia', short: 'Gates',
-    detect: t => /GATES AUSTRALIA PTY LTD/i.test(t) && /TAX INVOICE/i.test(t) && /PRODUCT CODE/i.test(t),
-    parse(pages, source) {
-      const flat = pages.map(p => p.text).join('\n').replace(/\s+/g, ' ')
-      const head = flat.match(/(\d{6,})\s+(\d{8,})\s+(\d{1,2}-[A-Za-z]{3}-\d{4})/)
-      const date = parseDate(head && head[3])
-      const eom = m => { const d = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)); return d.toISOString().slice(0, 10) }   // the last day of the invoice's month
-      const terms = flat.match(/PAYMENT TERM\s*:\s*END OF MONTH\s*\+\s*(\d+)\s*DAYS/i)
-      const inv = {
-        supplier: this.name, po: '', invoice_no: head ? head[2] : '', invoice_date: date, due_date: terms && date ? addDays(eom(date), +terms[1]) : '',
-        currency: (flat.match(/\bAMOUNT \(EXC GST\) [A-Z]*\s*([A-Z]{3})\b/) || flat.match(/\b(AUD|NZD|USD)\b/) || [])[1] || 'AUD', invoice_total: null, lines: [], notes: [], source,
-      }
-      const COL = colsOf(['no', 95], ['code', 255], ['qty', 340], ['unit', 395], ['price', 460], ['per', 495], ['amt', Infinity])
-      let po = '', cur = null, gst = 0
-      const pos = []
-      for (const page of pages) {
-        let inTable = false
-        for (const line of page.lines) {
-          if (/PRODUCT CODE/.test(line.text) && /QUANTITY/.test(line.text)) { inTable = true; continue }
-          const t = line.text
-          if (/^GRAND TOTAL/.test(t)) { const v = usNum(lastItem(line)); if (v !== null) inv.invoice_total = v; inTable = false; cur = null; continue }
-          if (/%\s*GST/.test(t) && !/AMT/.test(t)) { const v = usNum(lastItem(line)); if (v !== null) gst = v; continue }
-          if (!inTable) continue
-          const co = t.match(/CUSTOMER ORDER NO\.\s*:\s*(\d{4,})/)
-          if (co) { po = co[1]; if (!pos.includes(po)) pos.push(po); cur = null; continue }
-          const c = cellsOf(line, COL)
-          const qty = usNum(c.qty), amt = usNum(c.amt)
-          if (/^\d+$/.test(c.no || '') && c.code && qty !== null && amt !== null) {
-            cur = addLine(inv, { po, code: c.code, our_code: '', desc: '', qty, price: usNum(c.price), total: amt })
-          } else if (cur && !c.no && c.code && !c.qty && !/COUNTRY OF ORIGIN/i.test(c.code)) {
-            if (!cur.desc) { cur.desc = c.code; const cat = c.code.split(/\s+/)[0]; if (/^\d{3,5}[A-Z]{0,3}$/.test(cat)) cur.alt_codes = [cat] }   // the catalogue number is also tried as the part number
-            else appendDesc(cur, c.code)
-          }
-        }
-      }
-      inv.po = pos.join(', ')
-      return [verify(inv, { extra: gst, extraLabel: 'GST' })]
-    },
-  }
-  
   // ---- registered after the readers that are already in core (ratioparts, Rotary; BBT, HTS, Rotary list) ----
-  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF, PROLUBE, RATIOPARTS, NGK, ATEX, GATES)
+  PDF_PROFILES.push(YAMABIKO, GA, BARNEL, ZAMA, ATOM, GARDNER, ITAL, JAKMAX, SDG, TECOMEC, TSB, RBI, BRIGGS, PIX, COX, HTSPDF, PROLUBE, RATIOPARTS, NGK, ATEX)
   EXCEL_PROFILES.push(PRORING, TOPENGINE)
   
 })()
@@ -3220,6 +3211,7 @@
   //   #/invoices            Invoice Creation: add invoices to shipments, group them, rename
   //   #/edit[/<id>]         Shipment Edit: add our code beside a supplier code, for this shipment only
   //   #/purchasing[/<id>]   Purchasing Information: what is still outstanding on a shipment's POs
+  //   #/ordering[/<accno>]  Ordering: suppliers ranked by when to order, forecast and suggested PO per supplier
   //   #/labels              Label Printer: product labels from MYOB item data (replaces LabelPrinting.xlsm)
   //   #/count[/<id>]        Shipment Count: check off and enter received quantities
   //   #/reconcile[/<id>]    Shipment Reconciliation: by invoice, with variances and notes
@@ -3235,7 +3227,7 @@
       <div class="sidebar-user"><strong>${esc(me.name)}</strong>${me.is_manager ? 'Manager' : 'Staff'}</div>
       <div class="nav">
         ${link('dashboard', 'Dashboard', 'dashboard')}
-        ${me.is_manager ? link('invoices', 'Invoice Creation', 'invoices') + link('edit', 'Shipment Edit', 'edit') + link('purchasing', 'Purchasing Information', 'purchasing') : ''}
+        ${me.is_manager ? link('invoices', 'Invoice Creation', 'invoices') + link('edit', 'Shipment Edit', 'edit') + link('purchasing', 'Purchasing Information', 'purchasing') + link('ordering', 'Ordering', 'ordering') : ''}
         ${link('count', 'Shipment Count', 'count')}
         ${me.is_manager ? link('reconcile', 'Shipment Reconciliation', 'reconcile') + link('completed', 'Completed Shipments', 'completed') + link('statements', 'Creditor Statements', 'statements') : ''}
         ${link('labels', 'Label Printer', 'labels')}
@@ -3247,7 +3239,7 @@
     topbarTitle.textContent = title
     topbarSubtitle.textContent = subtitle
     const q = lastShipmentId ? '/' + lastShipmentId : ''
-    topbarRight.innerHTML = rightHtml + (!me.is_manager ? `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/labels">Labels</a></span>` : `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/invoices">Invoices</a><a class="btn ghost" href="#/edit${q}">Edit</a><a class="btn ghost" href="#/purchasing">Purchasing</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/reconcile">Reconcile</a><a class="btn ghost" href="#/labels">Labels</a></span>`)
+    topbarRight.innerHTML = rightHtml + (!me.is_manager ? `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/labels">Labels</a></span>` : `<span class="mobile-nav"><a class="btn ghost" href="#/dashboard">Dashboard</a><a class="btn ghost" href="#/invoices">Invoices</a><a class="btn ghost" href="#/edit${q}">Edit</a><a class="btn ghost" href="#/purchasing">Purchasing</a><a class="btn ghost" href="#/ordering">Ordering</a><a class="btn ghost" href="#/count">Count</a><a class="btn ghost" href="#/reconcile">Reconcile</a><a class="btn ghost" href="#/labels">Labels</a></span>`)
   }
 
   // Staff who are not managers only see Shipment Count. This hides the other tabs in the app. On its own it is
@@ -3269,6 +3261,8 @@
     if (h === '#/receive' || h === '#/shipments') { location.replace('#/invoices'); return }
     if ((m = h.match(/^#\/edit\/([0-9a-f-]{36})$/))) return showEdit(m[1])
     if (h === '#/edit') return showShipmentChooser('edit')
+    if ((m = h.match(/^#\/ordering\/(\d+)$/))) return Ordering.showSupplier(parseInt(m[1], 10))
+    if (h === '#/ordering') return Ordering.showList()
     if ((m = h.match(/^#\/purchasing\/([0-9a-f-]{36})$/))) return showPurchasing(m[1])
     if (h === '#/purchasing') return showPurchasingList()
     if ((m = h.match(/^#\/count\/([0-9a-f-]{36})$/))) return showCount(m[1])
@@ -6632,6 +6626,387 @@
     window.print()
     setTimeout(finish, 120000)   // in case this browser never reports the print window closing
   }
+
+
+  // ============================================================
+  // ORDERING (reorder planning, managers only)
+  //   #/ordering           suppliers ranked by when an order has to be placed
+  //   #/ordering/<accno>   one supplier: forecast, suggested quantities, order settings, export
+  // Data: pur_* tables in this Supabase project, filled by sync_purchasing.py on the office PC.
+  // The forecast itself is worked out in the database (pur_plan); this screen re-runs the same
+  // maths in the browser when the order settings are changed.
+  // ============================================================
+  const Ordering = (() => {
+    const DAY = 86400000
+    const num = (v, d = 0) => v == null || isNaN(v) ? '' : Number(v).toLocaleString('en-NZ', { minimumFractionDigits: d, maximumFractionDigits: d })
+    const money = (v, cur) => v == null ? '' : `${cur ? cur + ' ' : ''}${Number(v).toLocaleString('en-NZ', { maximumFractionDigits: 0 })}`
+    const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+    const todayStr = () => iso(new Date())
+    const parseD = s => new Date(s + 'T00:00:00')
+    const daysFromToday = s => s ? Math.round((parseD(s) - parseD(todayStr())) / DAY) : null
+    const fmtD = s => s ? parseD(s).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: '2-digit' }) : ''
+    const addDays = (s, n) => { const d = parseD(s); d.setDate(d.getDate() + n); return iso(d) }
+    const leadLabel = (a, b) => a == null ? '' : (a === b ? `${a}d` : `${a}–${b}d`)
+    const mostCommon = arr => { const c = {}; let best = arr[0], n = 0; arr.forEach(v => { c[v] = (c[v] || 0) + 1; if (c[v] > n) { n = c[v]; best = v } }); return best }
+
+    let settings = { review_days: 30, service_z: 1.28, default_lead_days: 90 }
+    let syncText = ''
+
+    async function loadSettings() {
+      const [{ data: s }, { data: sync }, { data: meta }] = await Promise.all([
+        supabase.from('pur_settings').select('*').eq('id', 1).maybeSingle(),
+        supabase.from('pur_sync').select('last_ok, message').eq('id', 1).maybeSingle(),
+        supabase.from('pur_plan_meta').select('refreshed_at').eq('id', 1).maybeSingle()])
+      if (s) settings = s
+      if (sync?.last_ok) {
+        const ageMin = (Date.now() - new Date(sync.last_ok)) / 60000
+        syncText = `MYOB data ${fmtWhen(sync.last_ok)}` + (meta?.refreshed_at ? ` · forecast ${fmtWhen(meta.refreshed_at)}` : '')
+          + (ageMin > 120 ? ' · ⚠ sync not running?' : '')
+      } else syncText = 'No MYOB purchasing sync yet'
+    }
+    async function fetchAll(q) {   // PostgREST returns at most 1000 rows per request
+      const out = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await q().range(from, from + 999)
+        if (error) throw error
+        out.push(...data)
+        if (data.length < 1000) return out
+      }
+    }
+
+    // ---------------------------------------------------------- supplier list
+    let listMode = 'attention', listSearch = '', suppliers = null
+    async function showList() {
+      renderSidebar('ordering')
+      setTop('Ordering', 'Loading…')
+      content.innerHTML = `<div class="empty-state">Loading suppliers…</div>`
+      try {
+        await loadSettings()
+        const { data, error } = await supabase.from('pur_supplier_urgency').select('*')
+        if (error) throw error
+        suppliers = data
+      } catch (e) {
+        content.innerHTML = `<div class="notice err">Couldn't load suppliers: ${esc(e.message)}</div>`; return
+      }
+      setTop('Ordering', syncText)
+      drawList()
+    }
+    function urgency(s) {
+      const d = daysFromToday(s.order_by)
+      if (s.lines_order > 0 || (d != null && d <= 0)) return { cls: 'red', label: d != null && d < 0 ? `${-d} days overdue` : 'Order now', rank: 0 }
+      if (d != null && d <= 14) return { cls: 'amber', label: `Order within ${d} days`, rank: 1 }
+      if (s.lines_topup > 0 || s.lines_at_risk > 0) return { cls: 'amber', label: 'Coming up', rank: 2 }
+      return { cls: 'green', label: 'OK', rank: 3 }
+    }
+    function drawList() {
+      const all = suppliers.filter(s => s.items_selling > 0)
+      let rows = all
+      if (listMode === 'attention') rows = rows.filter(s => s.lines_order + s.lines_topup + s.lines_at_risk > 0)
+      if (listSearch) rows = rows.filter(s => (s.name || '').toLowerCase().includes(listSearch.toLowerCase()) || String(s.accno) === listSearch)
+      rows = rows.map(s => ({ ...s, u: urgency(s) })).sort((a, b) =>
+        a.u.rank - b.u.rank || (a.order_by || '9999').localeCompare(b.order_by || '9999') || (b.monthly_value_at_risk || 0) - (a.monthly_value_at_risk || 0))
+      const nowCount = all.filter(s => urgency(s).rank === 0).length
+      const soonCount = all.filter(s => urgency(s).rank === 1).length
+      const lines = all.reduce((t, s) => t + s.lines_order, 0)
+      const noLead = all.filter(s => s.lead_default_used).length
+      content.innerHTML = `
+        <div class="po-cards">
+          <div class="po-card"><div class="big" style="color:var(--err)">${nowCount}</div><div class="lbl">suppliers to order from now</div></div>
+          <div class="po-card"><div class="big" style="color:var(--warn)">${soonCount}</div><div class="lbl">due in the next 2 weeks</div></div>
+          <div class="po-card"><div class="big">${num(lines)}</div><div class="lbl">lines below their reorder point</div></div>
+          <div class="po-card"><div class="big">${noLead}</div><div class="lbl">suppliers using a default lead time</div></div>
+        </div>
+        <div class="po-toolbar">
+          <div class="po-seg"><button data-m="attention" class="${listMode === 'attention' ? 'on' : ''}">Needs attention</button><button data-m="all" class="${listMode === 'all' ? 'on' : ''}">All suppliers with sales</button></div>
+          <input class="po-search" id="poSearch" placeholder="Search supplier" value="${esc(listSearch)}">
+          <span class="po-dim">${rows.length} shown · ranked by when the order has to be placed</span>
+        </div>
+        <div class="table-card po-table"><table class="grid">
+          <thead><tr><th>Supplier</th><th>Status</th><th>Order by</th><th class="num">Order now</th><th class="num">Top-ups</th>
+            <th class="num">At risk</th><th class="num">Spiking</th><th class="num">Est. order</th><th class="num">Lead time</th></tr></thead>
+          <tbody>${rows.map(s => `<tr class="po-click" data-acc="${s.accno}">
+            <td><b>${esc(s.name)}</b> <span class="po-dim">#${s.accno}</span></td>
+            <td><span class="po-pill ${s.u.cls}">${esc(s.u.label)}</span></td>
+            <td>${s.order_by ? fmtD(s.order_by) : '<span class="po-dim">—</span>'}</td>
+            <td class="num">${s.lines_order || ''}</td><td class="num">${s.lines_topup || ''}</td>
+            <td class="num">${s.lines_at_risk ? `<span style="color:var(--err);font-weight:700">${s.lines_at_risk}</span>` : ''}</td>
+            <td class="num">${s.lines_spiking || ''}</td>
+            <td class="num">${s.value_with_topups ? money(s.value_with_topups, s.currency) : ''}</td>
+            <td class="num">${leadLabel(s.lead_days_min, s.lead_days_max)}${s.lead_default_used ? ' <span class="po-tag">default</span>' : ''}${s.air_days ? `<div class="po-dim" style="font-size:11px">air ${s.air_days}d</div>` : ''}</td>
+          </tr>`).join('') || `<tr><td colspan="9" class="muted" style="padding:30px;text-align:center">Nothing needs attention.</td></tr>`}</tbody>
+        </table></div>`
+      content.querySelectorAll('.po-seg button').forEach(b => b.onclick = () => { listMode = b.dataset.m; drawList() })
+      const se = $('poSearch'); se.oninput = () => { listSearch = se.value.trim(); drawList(); const n = $('poSearch'); n.focus(); n.setSelectionRange(n.value.length, n.value.length) }
+      content.querySelectorAll('tr.po-click').forEach(tr => tr.onclick = () => location.hash = `#/ordering/${tr.dataset.acc}`)
+    }
+
+    // ---------------------------------------------------------- forecast maths (same as the database's)
+    // fc[0] = expected units for the whole current month, fc[1] = next month, ...
+    function demand(fc, from, days) {
+      let total = 0, d = parseD(from), left = Math.max(0, Math.round(days)), i = 0
+      while (left > 0) {
+        const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 1), mLen = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+        const take = Math.min(left, Math.round((mEnd - d) / DAY))
+        total += (fc[Math.min(i, fc.length - 1)] || 0) * take / mLen
+        left -= take; d = mEnd; i++
+      }
+      return total
+    }
+    function daysCover(fc, from, stock) {
+      if (stock <= 0) return 0
+      let d = parseD(from), i = 0, days = 0, left = stock
+      while (days < 730) {
+        const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 1), mLen = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+        const span = Math.round((mEnd - d) / DAY), daily = (fc[Math.min(i, fc.length - 1)] || 0) / mLen
+        if (daily > 0 && left <= daily * span) return Math.min(730, days + Math.floor(left / daily))
+        left -= daily * span; days += span; d = mEnd; i++
+      }
+      return 730
+    }
+
+    // ---------------------------------------------------------- one supplier
+    let S = null
+    async function showSupplier(accno) {
+      renderSidebar('ordering')
+      setTop('Ordering', 'Loading forecast…')
+      content.innerHTML = `<div class="empty-state">Loading forecast…</div>`
+      try {
+        await loadSettings()
+        const [items, { data: sup }, { data: leads }] = await Promise.all([
+          fetchAll(() => supabase.from('pur_plan').select('*').eq('supplier_accno', accno).order('stock_code')),
+          supabase.from('pur_suppliers').select('*').eq('accno', accno).maybeSingle(),
+          supabase.from('pur_supplier_settings').select('*').eq('accno', accno)])
+        const z0 = Number(settings.service_z) || 1.28
+        items.forEach(it => {
+          it.fc = (it.fc || []).map(Number)
+          it.sigma = it.safety > 0 && it.lead_days > 0 ? it.safety / (z0 * Math.sqrt(it.lead_days / 30)) : 0
+        })
+        S = {
+          accno, sup: sup || { name: `Supplier #${accno}`, currency: '' }, leads: leads || [], items,
+          lead: null, mainLead: items.length ? mostCommon(items.map(i => i.lead_days)) : (settings.default_lead_days || 90),
+          coverDays: settings.review_days || 30, extraMonths: 0, z: z0,
+          adjust: 0, maxMonths: 12, target: 0, fill: false, show: 'topup', locked: {}, filled: {}, search: ''
+        }
+      } catch (e) {
+        content.innerHTML = `<div class="notice err">Couldn't load this supplier: ${esc(e.message)}</div>`; return
+      }
+      drawSupplier()
+    }
+
+    const cost = it => Number(it.unit_cost) || 0
+    const qtyOf = it => it.stock_code in S.locked ? S.locked[it.stock_code] : it._sugg + (S.filled[it.stock_code] || 0)
+
+    function recalc() {
+      const t = todayStr(), adj = 1 + (Number(S.adjust) || 0) / 100
+      const after = S.coverDays + S.extraMonths * 30
+      for (const it of S.items) {
+        const fc = it.fc.map(x => x * adj)
+        const L = S.lead ?? it.lead_days
+        const level = Number(it.level) * adj
+        const safety = S.z * it.sigma * Math.sqrt(L / 30)
+        const pos = Number(it.position)
+        const dts = daysCover(fc, t, pos - safety)
+        const status = (level <= 0 && pos >= 0) ? 'none' : dts - L <= 0 ? 'order' : dts - L <= after ? 'topup' : 'ok'
+        const need = demand(fc, t, L + after) + safety - pos
+        const moq = Math.max(1, Number(it.moq) || 1), pack = Math.max(1, Number(it.pack) || 1)
+        let q = 0
+        if (status === 'order' || status === 'topup') q = Math.max(moq, pack, Math.ceil(Math.max(need, 0) / pack) * pack)
+        if (q > 0 && level > 0 && S.maxMonths > 0) {   // don't let one line end up with more than maxMonths (unless the MOQ forces it)
+          const cap = Math.floor((level * S.maxMonths - pos) / pack) * pack
+          if (cap < q) q = Math.max(cap, moq, pack)
+        }
+        Object.assign(it, { _fc: fc, _L: L, _level: level, _dts: dts, _status: status, _sugg: q, _moq: moq, _pack: pack, _orderBy: addDays(t, dts - L) })
+      }
+      // fill to a target order value: add packs to the lines with the least cover after ordering
+      S.filled = {}
+      if (S.fill && S.target > 0) {
+        let total = S.items.reduce((s, it) => s + qtyOf(it) * cost(it), 0)
+        const monthsAfter = it => (Number(it.position) + qtyOf(it)) / it._level
+        const queue = S.items.filter(it => it._level > 0 && !(it.stock_code in S.locked) && cost(it) > 0)
+          .sort((a, b) => monthsAfter(a) - monthsAfter(b))
+        let guard = 0
+        while (total < S.target && queue.length && guard++ < 50000) {
+          const it = queue.shift()
+          const cur = qtyOf(it), step = cur === 0 ? Math.max(it._moq, it._pack) : it._pack
+          if (S.maxMonths > 0 && (Number(it.position) + cur + step) / it._level > S.maxMonths) continue   // full: drop it
+          S.filled[it.stock_code] = (S.filled[it.stock_code] || 0) + step
+          total += step * cost(it)
+          const m = monthsAfter(it); let i = queue.findIndex(x => monthsAfter(x) > m); if (i < 0) i = queue.length
+          queue.splice(i, 0, it)
+        }
+      }
+    }
+
+    function why(it) {
+      const bits = []
+      if (Number(it.position) < 0) bits.push('on back order')
+      if (it._status === 'order') bits.push(`runs low ${fmtD(addDays(todayStr(), it._dts))}; ${it._L}d lead time`)
+      else if (it._status === 'topup') bits.push(`would need ordering by ${fmtD(it._orderBy)}`)
+      if (Number(it.spike_ratio) >= 2 && Number(it.sold_28d) >= 5) bits.push(`<b style="color:var(--err)">selling ${num(it.spike_ratio, 1)}× normal</b>`)
+      if (Number(it.trend) >= 1.2) bits.push('growing')
+      if (Number(it.trend) <= 0.8) bits.push('slowing')
+      if (S.filled[it.stock_code]) bits.push(`+${S.filled[it.stock_code]} to fill`)
+      if (it._moq > 1 && it._sugg === it._moq) bits.push(`MOQ ${it._moq}`)
+      return bits.join(' · ')
+    }
+
+    function drawSupplier() {
+      recalc()
+      const s = S.sup, cur = s.currency || ''
+      setTop(s.name, `#${S.accno} · ${cur} · ${num(S.items.length)} active items · ${syncText}`,
+        `<a class="btn ghost" href="#/ordering">← All suppliers</a><button class="btn" id="poExport">Export order (CSV)</button>`)
+      $('poExport').onclick = exportCsv
+      const sea = S.leads.filter(l => l.mode === 'sea' || l.mode === 'local')
+      const air = S.leads.filter(l => l.mode === 'air'), other = S.leads.filter(l => l.mode === 'other')
+      const chip = (l, label) => `<button class="btn ghost po-small ${S.lead === l.lead_days ? 'po-on' : ''}" data-lead="${l.lead_days}">${esc(label)} ${l.lead_days}d</button>`
+      const showSel = { order: 'Order now', topup: '+ Top-ups', selling: 'Everything selling', all: 'All items' }
+      content.innerHTML = `
+        <div class="panel">
+          <div style="font-weight:700;margin-bottom:10px">Order settings <span class="po-dim" style="font-weight:500;font-size:12px">— these apply to this order only, unless you save them</span></div>
+          <div class="po-settings">
+            <div class="po-field"><label>Lead time (days)</label>
+              <div class="row"><input type="number" id="poLead" min="0" value="${S.lead ?? S.mainLead}">
+                ${sea.map(l => chip(l, l.category || (l.mode === 'local' ? 'Local' : 'Sea'))).join('')}${air.map(l => chip(l, 'Air')).join('')}${other.map(l => chip(l, 'Other')).join('')}</div>
+              <div class="hint">${S.lead == null ? 'Using each line\'s normal lead time.' : `Using ${S.lead} days for every line.`} <a href="#" id="poSaveLead">Save as supplier default</a></div></div>
+            <div class="po-field"><label>Order lasts after it arrives</label>
+              <div class="row"><select id="poCover">${[14, 30, 60, 90, 120, 180].map(d => `<option value="${d}" ${S.coverDays === d ? 'selected' : ''}>${d < 30 ? '2 weeks' : (d / 30) + ' month' + (d > 30 ? 's' : '')}</option>`).join('')}</select></div>
+              <div class="hint">Time until the next order from this supplier.</div></div>
+            <div class="po-field"><label>Extra stock</label>
+              <div class="row">${[0, 1, 2, 3].map(m => `<button class="btn ghost po-small ${S.extraMonths === m ? 'po-on' : ''}" data-extra="${m}">${m ? '+' + m + ' mo' : 'None'}</button>`).join('')}</div>
+              <div class="hint">e.g. while you're filling a container.</div></div>
+            <div class="po-field"><label>Safety level</label>
+              <div class="row">${[[0.84, 'Low'], [1.28, 'Normal'], [1.65, 'High']].map(([z, l]) => `<button class="btn ghost po-small ${Math.abs(S.z - z) < 0.01 ? 'po-on' : ''}" data-z="${z}">${l}</button>`).join('')}</div>
+              <div class="hint">Bigger buffer for lines that sell unevenly.</div></div>
+            <div class="po-field"><label>Demand adjustment</label>
+              <div class="row"><input type="number" id="poAdj" step="5" value="${S.adjust}"> %</div>
+              <div class="hint">For expected growth or a promotion.</div></div>
+            <div class="po-field"><label>Max months of stock per line</label>
+              <div class="row"><input type="number" id="poMax" min="0" value="${S.maxMonths}"></div>
+              <div class="hint">Stops slow lines being over-ordered. 0 = no limit.</div></div>
+            <div class="po-field"><label>Fill to order value (${esc(cur)})</label>
+              <div class="row"><input type="number" id="poTarget" min="0" step="1000" value="${S.target || ''}" placeholder="e.g. 20000">
+                <button class="btn ${S.fill ? '' : 'ghost'} po-small" id="poFill">${S.fill ? 'Filled ✓' : 'Fill'}</button></div>
+              <div class="hint">Adds packs to the lines that will run out soonest.</div></div>
+          </div>
+        </div>
+        <div class="po-totals" id="poTotals"></div>
+        <div class="po-toolbar">
+          <div class="po-seg">${Object.entries(showSel).map(([k, l]) => `<button data-show="${k}" class="${S.show === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+          <input class="po-search" id="poLineSearch" placeholder="Search code or description" value="${esc(S.search)}">
+          <button class="btn ghost po-small" id="poClear">Clear my changes</button>
+        </div>
+        <div class="table-card po-table" id="poLines"></div>`
+
+      content.querySelectorAll('[data-lead]').forEach(b => b.onclick = () => { const v = Number(b.dataset.lead); S.lead = S.lead === v ? null : v; drawSupplier() })
+      $('poLead').onchange = e => { const v = parseInt(e.target.value, 10); S.lead = isNaN(v) ? null : v; drawSupplier() }
+      $('poSaveLead').onclick = async e => { e.preventDefault(); await saveLead() }
+      $('poCover').onchange = e => { S.coverDays = Number(e.target.value); drawSupplier() }
+      content.querySelectorAll('[data-extra]').forEach(b => b.onclick = () => { S.extraMonths = Number(b.dataset.extra); drawSupplier() })
+      content.querySelectorAll('[data-z]').forEach(b => b.onclick = () => { S.z = Number(b.dataset.z); drawSupplier() })
+      $('poAdj').onchange = e => { S.adjust = Number(e.target.value) || 0; drawSupplier() }
+      $('poMax').onchange = e => { S.maxMonths = Math.max(0, Number(e.target.value) || 0); drawSupplier() }
+      $('poTarget').onchange = e => { S.target = Number(e.target.value) || 0; if (S.fill) drawSupplier() }
+      $('poFill').onclick = () => { S.target = Number($('poTarget').value) || 0; S.fill = !S.fill && S.target > 0; if (S.fill && (S.show === 'order' || S.show === 'topup')) S.show = 'selling'; drawSupplier() }
+      content.querySelectorAll('[data-show]').forEach(b => b.onclick = () => { S.show = b.dataset.show; drawSupplier() })
+      const ls = $('poLineSearch'); ls.oninput = () => { S.search = ls.value.trim(); drawLines() }
+      $('poClear').onclick = () => { S.locked = {}; drawSupplier() }
+      drawLines(); drawTotals()
+    }
+
+    function visibleItems() {
+      const q = S.search.toLowerCase()
+      return S.items.filter(it => {
+        const qty = qtyOf(it)
+        if (q && !(`${it.stock_code} ${it.description} ${it.supplier_code}`.toLowerCase().includes(q))) return false
+        if (S.show === 'order') return it._status === 'order' || (qty > 0 && it.stock_code in S.locked)
+        if (S.show === 'topup') return it._status === 'order' || it._status === 'topup' || qty > 0
+        if (S.show === 'selling') return it._level > 0 || qty > 0
+        return true
+      })
+    }
+    function drawLines() {
+      const groups = [['order', 'Order now — below reorder point'], ['topup', 'Top-ups — will need ordering before the next order could arrive'],
+                      ['ok', 'Enough stock'], ['none', 'No sales in the last 12 months']]
+      const vis = visibleItems(), LIMIT = 1500, t = todayStr()
+      let shown = 0, html = ''
+      for (const [g, label] of groups) {
+        const rows = vis.filter(it => it._status === g).sort((a, b) => a._dts - b._dts || b._level - a._level)
+        if (!rows.length) continue
+        html += `<tr class="po-group"><td colspan="14">${label} (${rows.length})</td></tr>`
+        for (const it of rows) {
+          if (shown++ >= LIMIT) break
+          const qty = qtyOf(it), locked = it.stock_code in S.locked
+          const next3 = it._fc.slice(0, 3).reduce((a, b) => a + b, 0)
+          const monthsNow = it._level > 0 ? Number(it.position) / it._level : null
+          const ob = it._status === 'none' ? '' : (it._orderBy <= t ? `<span style="color:var(--err);font-weight:700">${fmtD(it._orderBy)}</span>` : fmtD(it._orderBy))
+          html += `<tr>
+            <td><b>${esc(it.stock_code)}</b></td><td>${esc(it.description)}</td><td class="po-dim">${esc(it.supplier_code)}</td>
+            <td class="num">${num(it.in_stock)}</td><td class="num">${num(it.on_order)}${it.next_po_due ? `<div class="po-dim" style="font-size:11px">due ${fmtD(it.next_po_due)}</div>` : ''}</td>
+            <td class="num">${num(it.on_sales_order) || ''}</td><td class="num">${num(it.last12)}</td><td class="num">${num(next3)}</td>
+            <td class="num">${monthsNow == null ? '' : num(monthsNow, 1)}</td><td class="num">${ob}</td>
+            <td class="num po-dim">${it._moq > 1 ? 'MOQ ' + it._moq : ''}${it._pack > 1 ? ` /${it._pack}` : ''}</td>
+            <td class="num"><input class="po-qty ${locked ? 'locked' : ''}" data-code="${esc(it.stock_code)}" type="number" min="0" step="${it._pack}" value="${qty || ''}" placeholder="0"></td>
+            <td class="num">${qty ? money(qty * cost(it)) : ''}</td>
+            <td class="po-why">${why(it)}</td></tr>`
+        }
+      }
+      if (shown > LIMIT) html += `<tr><td colspan="14" class="muted" style="text-align:center;padding:14px">Showing the first ${LIMIT} lines. Search to find others.</td></tr>`
+      $('poLines').innerHTML = `<table class="grid"><thead><tr><th>Code</th><th>Description</th><th>Supp. code</th><th class="num">Stock</th><th class="num">On PO</th>
+        <th class="num">On SO</th><th class="num">Sold 12m</th><th class="num">Next 3m</th><th class="num">Months cover</th><th class="num">Order by</th>
+        <th class="num">MOQ/pack</th><th class="num">Order qty</th><th class="num">Value</th><th>Why</th></tr></thead>
+        <tbody>${html || `<tr><td colspan="14" class="muted" style="text-align:center;padding:30px">No lines to show. Try "Everything selling".</td></tr>`}</tbody></table>`
+      $('poLines').querySelectorAll('input.po-qty').forEach(inp => inp.onchange = () => {
+        const v = inp.value === '' ? 0 : Math.max(0, Math.round(Number(inp.value)))
+        S.locked[inp.dataset.code] = v
+        inp.classList.add('locked')
+        if (S.fill) { drawSupplier(); return }
+        const it = S.items.find(x => x.stock_code === inp.dataset.code)
+        inp.closest('tr').children[12].textContent = v ? money(v * cost(it)) : ''
+        drawTotals()
+      })
+    }
+    function drawTotals() {
+      const cur = S.sup.currency || ''
+      const lines = S.items.filter(it => qtyOf(it) > 0)
+      const units = lines.reduce((t, it) => t + qtyOf(it), 0), value = lines.reduce((t, it) => t + qtyOf(it) * cost(it), 0)
+      const pct = S.target > 0 ? Math.min(100, value / S.target * 100) : null
+      const zeroed = S.items.filter(it => it._status === 'order' && qtyOf(it) === 0).length
+      $('poTotals').innerHTML = `<div>Lines <b>${num(lines.length)}</b></div><div>Units <b>${num(units)}</b></div>
+        <div>Order value <b>${money(value, cur)}</b></div>
+        ${pct != null ? `<div>Target ${money(S.target, cur)} <div class="po-gauge"><div style="width:${pct}%"></div></div></div>` : ''}
+        <div class="grow"></div>${zeroed ? `<div style="color:#FFC56B;font-weight:600">${zeroed} line${zeroed > 1 ? 's' : ''} below reorder point set to 0</div>` : ''}`
+    }
+    async function saveLead() {
+      const v = parseInt($('poLead').value, 10)
+      if (isNaN(v) || v < 0) return note('Enter a lead time in days first.')
+      const modeName = S.sup.currency === 'NZD' ? 'local' : 'sea'
+      const { error } = await supabase.from('pur_supplier_settings').upsert(
+        { accno: S.accno, mode: modeName, category: '', lead_days: v, note: `Set on Ordering screen by ${me.name}`, updated_at: new Date().toISOString() },
+        { onConflict: 'accno,mode,category' })
+      if (error) return note('Not saved: ' + error.message)
+      S.leads = S.leads.filter(l => !(l.mode === modeName && l.category === '')).concat([{ accno: S.accno, mode: modeName, category: '', lead_days: v }])
+      note(`Saved: ${S.sup.name} lead time is now ${v} days. The supplier list updates after the next sync (within 15 minutes).`, true)
+    }
+    function note(msg, ok = false) {
+      const d = document.createElement('div'); d.className = 'notice ' + (ok ? 'ok' : 'err'); d.textContent = msg
+      content.prepend(d); setTimeout(() => d.remove(), 6000)
+    }
+    function exportCsv() {
+      const rows = S.items.filter(it => qtyOf(it) > 0)
+      if (!rows.length) return note('There are no lines with an order quantity yet.')
+      const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`
+      const csv = ['StockCode,SupplierCode,Description,Qty,UnitCost,Value,Reason']
+        .concat(rows.map(it => [it.stock_code, it.supplier_code, it.description, qtyOf(it), cost(it), (qtyOf(it) * cost(it)).toFixed(2),
+          why(it).replace(/<[^>]+>/g, '')].map(q).join(','))).join('\r\n')
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }))
+      a.download = `PO_${S.sup.name.replace(/[^\w]+/g, '_')}_${todayStr()}.csv`
+      a.click()
+    }
+
+    return { showList, showSupplier }
+  })()
+
 
   // ============================================================
   // START
