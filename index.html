@@ -553,6 +553,14 @@
   td input.po-qty.locked { border-color: var(--navy); background: #EEF1FB; font-weight: 700; }
   .po-why { font-size: 12px; color: var(--slate); max-width: 260px; }
   .po-table td:first-child { white-space: nowrap; }
+
+  /* ---- live count (several PCs counting one shipment) ---- */
+  .live-note { font-size: 12px; color: var(--slate); margin: -6px 0 12px; }
+  .live-note .dot { color: var(--ok); }
+  .live-note.off .dot { color: var(--warn); }
+  .live-note.off { color: var(--warn); }
+  #lines tr.live-flash td { background: var(--lime-tint) !important; transition: background 1.2s; }
+  #lines td.count input.clash { border-color: var(--err); background: var(--err-tint); }
 </style>
 </head>
 <body>
@@ -3250,6 +3258,7 @@
     content.onkeydown = null
     if (dashTimer) { clearInterval(dashTimer); dashTimer = null }   // the Dashboard refreshes itself while it is open
     if (countTimer) { clearInterval(countTimer); countTimer = null }   // ...and so does the Count list
+    stopCountLive()   // the live Shipment Count checks for other PCs' counts only while that screen is open
     const h = location.hash || (me.is_manager ? '#/invoices' : '#/count')
     if (!me.is_manager && !/^#\/(count|labels|dashboard)(\/|\?|$)/.test(h)) {
       const m2 = h.match(/^#\/(?:shipment|edit|reconcile)\/([0-9a-f-]{36})$/)
@@ -5054,6 +5063,7 @@
     $('dlBtn').onclick = downloadCheckoff
     $('printBtn').onclick = () => window.print()
     updateProgress()
+    startCountLive()
   }
 
   function itemRowHtml(it) {
@@ -5232,7 +5242,7 @@
     inp.classList.remove('saving')
     const bad = res.find(r => r.error)
     if (bad) { inp.classList.add('failed'); inp.title = friendlyDbError(bad.error); return }
-    patches.forEach(p => { p.l.variance_note = p.note })
+    patches.forEach(p => { p.l.variance_note = p.note; p.l._wrote = Date.now() })
     finishItem(it)
     inp.classList.add('saved')
     scanFocusSoon()
@@ -5289,6 +5299,8 @@
     return `mailto:${PURCHASING_EMAIL}?subject=${encodeURIComponent(`Shipment ${name} is complete`)}&body=${encodeURIComponent(body)}`
   }
   async function confirmShipment() {
+    try { await syncCountNow() } catch {}   // pick up anything counted on another PC a moment ago
+    if (cur.shipment.status !== 'open') return
     const sh = cur.shipment, name = shipName(sh)
     const un = cur.items.filter(it => it.received === null).length
     const msg = un
@@ -5327,11 +5339,13 @@
     const alloc = value === null ? it.lines.map(() => null) : allocateCount(value, it.lines.map(l => +l.inv_qty))
     const now = new Date().toISOString()
     const patches = it.lines.map((l, i) => ({ l, patch: { received: alloc[i], counted_by: value === null ? null : me.staffno, counted_at: value === null ? null : now } }))
-    const res = await Promise.all(patches.map(p => supabase.from('shipment_lines').update(p.patch).eq('id', p.l.id)))
+    const res = await Promise.all(patches.map(p => guardedLineUpdate(p.l, p.patch)))
     inp.classList.remove('saving')
     const bad = res.find(r => r.error)
     if (bad) { inp.classList.add('failed'); inp.title = bad.error.message; return }
-    patches.forEach(p => Object.assign(p.l, p.patch))
+    if (res.some(r => r.conflict)) { await handleCountClash(it, inp, value); scanFocusSoon(); return }
+    patches.forEach(p => { Object.assign(p.l, p.patch); p.l._wrote = Date.now() })
+    inp.classList.remove('clash')
     finishItem(it)
     inp.classList.add('saved')
     tr.dataset.tags = itemTags(it)
@@ -5339,6 +5353,136 @@
     updateProgress()   // the shipment stays open until Confirm shipment is pressed
     if ($('scanSaved') && cur.scanKey === it.key && value !== null) $('scanSaved').innerHTML = `Counted <strong>${fmtQty(value)}</strong> (invoiced ${fmtQty(it.expected)})${value !== +it.expected ? ' <strong class="bad">differs</strong>' : ''}`
     scanFocusSoon()
+  }
+
+
+  // ---------- live count: more than one PC on the same shipment ----------
+  // Every few seconds (and at once when Supabase reports a change) the lines of this shipment are read again and any count or
+  // note saved on another PC is shown here. A box you are typing in is left alone. Saving a count only succeeds if the line in the
+  // database is still what this screen last saw, so two PCs can never overwrite each other without being told.
+  let liveTimer = null, liveBusy = false, liveChan = null, liveId = null
+  const liveMs = () => window.__liveMs || 4000
+  const clock = () => new Date().toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const sameNum = (a, b) => (a === null || a === undefined || a === '') ? (b === null || b === undefined || b === '') : (b !== null && b !== undefined && b !== '' && +a === +b)
+  function setLiveNote(html, off = false) {
+    let el = $('liveNote')
+    if (!el) { content.querySelector('.facts')?.insertAdjacentHTML('afterend', '<div class="live-note" id="liveNote"></div>'); el = $('liveNote') }
+    if (!el) return
+    el.className = 'live-note' + (off ? ' off' : '')
+    el.innerHTML = html
+  }
+  function stopCountLive() {
+    clearInterval(liveTimer); liveTimer = null; liveId = null
+    document.removeEventListener('visibilitychange', onLiveVisible)
+    if (liveChan) { try { supabase.removeChannel(liveChan) } catch {} liveChan = null }
+  }
+  const onLiveVisible = () => { if (!document.hidden) syncCountNow() }
+  function startCountLive() {
+    stopCountLive()
+    if (!cur || cur.shipment.status !== 'open') return
+    liveId = cur.shipment.id
+    liveTimer = setInterval(syncCountNow, liveMs())
+    document.addEventListener('visibilitychange', onLiveVisible)
+    try {   // instant updates when Realtime is switched on for the table; the timer covers it when it is not
+      if (typeof supabase.channel === 'function') {
+        liveChan = supabase.channel('count-' + liveId)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shipment_lines', filter: `shipment_id=eq.${liveId}` }, () => syncCountNow())
+          .subscribe()
+      }
+    } catch {}
+    setLiveNote('<span class="dot">●</span> Live: counts entered on other PCs appear here within a few seconds.')
+  }
+  function refreshCountRow(it, flash) {
+    finishItem(it)
+    const tr = [...content.querySelectorAll('#lines tbody tr')].find(r => r.dataset.key === it.key); if (!tr) return
+    const recv = tr.querySelector('td.count input'), note = tr.querySelector('td.note input')
+    if (recv && document.activeElement !== recv) { recv.value = it.received ?? ''; recv.classList.remove('clash') }
+    if (note && document.activeElement !== note) note.value = it.note
+    tr.dataset.tags = itemTags(it)
+    tr.querySelector('td.diff').innerHTML = diffHtml(it)
+    if (flash) { tr.classList.add('live-flash'); tr.title = 'Updated from another PC'; setTimeout(() => { tr.classList.remove('live-flash'); tr.title = '' }, 2500) }
+  }
+  // true while the person has the cursor in this item's boxes: their line is not changed under them
+  const rowBeingEdited = it => {
+    const a = document.activeElement
+    const tr = a && a.closest && a.closest('#lines tbody tr')
+    return !!tr && tr.dataset.key === it.key && a.matches('td.count input, td.note input')
+  }
+  async function syncCountNow() {
+    if (liveBusy || !cur || !liveId || liveId !== cur.shipment.id || document.hidden) return
+    if (appShell.style.display === 'none') return stopCountLive()
+    liveBusy = true
+    const id = liveId, started = Date.now()
+    try {
+      const [rows, shRes] = await Promise.all([
+        fetchAll((a, b) => supabase.from('shipment_lines').select('id, received, counted_by, counted_at, variance_note').eq('shipment_id', id).order('id').range(a, b)),
+        supabase.from('shipments').select('status, summary').eq('id', id).maybeSingle()])
+      if (!cur || liveId !== id || cur.shipment.id !== id) return
+      if (shRes.error) throw shRes.error
+      const sh = shRes.data
+      if (sh && sh.status !== 'open') {   // confirmed (or changed) on another PC
+        cur.shipment.status = sh.status; cur.shipment.summary = sh.summary; shipOptionsCache.at = 0
+        stopCountLive()
+        return renderCountClosed(cur.shipment)
+      }
+      const byId = new Map(cur.lines.map(l => [l.id, l])), itemOf = new Map(), touched = new Map()
+      for (const x of cur.items) for (const l of x.lines) itemOf.set(l, x)
+      for (const r of rows) {
+        const l = byId.get(r.id); if (!l) continue
+        if ((l._wrote || 0) > started) continue                 // this PC saved it after this read began: ours is newer
+        const it = itemOf.get(l); if (!it) continue
+        if (rowBeingEdited(it)) continue                         // someone is typing here: the save will check it
+        const recvChanged = !sameNum(l.received, r.received)
+        const noteChanged = (l.variance_note || '') !== (r.variance_note || '')
+        if (!recvChanged && !noteChanged) continue
+        l.received = r.received; l.counted_by = r.counted_by; l.counted_at = r.counted_at; l.variance_note = r.variance_note
+        touched.set(it, true)
+      }
+      for (const it of touched.keys()) refreshCountRow(it, true)
+      if (touched.size) { applyFilter(); updateProgress() }
+      // the note for the whole shipment
+      const ta = $('shipNote')
+      if (sh && ta && document.activeElement !== ta) {
+        const n = (sh.summary || {}).count_note || {}
+        if ((n.text || '') !== ta.value.trim()) {
+          ta.value = n.text || ''; cur.shipment.summary = sh.summary
+          if ($('shipNoteStatus')) $('shipNoteStatus').textContent = n.text ? `Updated from another PC${n.by ? ` (${n.by})` : ''}` : ''
+        }
+      }
+      setLiveNote(touched.size
+        ? `<span class="dot">●</span> Live: ${plural(touched.size, 'item')} updated from another PC at ${clock()}.`
+        : `<span class="dot">●</span> Live: counts entered on other PCs appear here within a few seconds. Checked ${clock()}.`)
+    } catch (e) {
+      setLiveNote('● Not connected, trying again. Counts you enter are still saved when the connection is back.', true)
+    } finally { liveBusy = false }
+  }
+  // Save one invoice line's count only if the database still holds what this screen last saw. Returns {error, conflict}.
+  async function guardedLineUpdate(l, patch) {
+    let q = supabase.from('shipment_lines').update(patch).eq('id', l.id)
+    q = (l.received === null || l.received === undefined) ? q.is('received', null) : q.eq('received', l.received)
+    const { data, error } = await q.select('id')
+    if (error) return { error }
+    return { conflict: !data || data.length === 0 }
+  }
+  // Another PC counted this item since this screen last looked: show its number instead and say so.
+  async function handleCountClash(it, inp, typed) {
+    const lines = await fetchAll((a, b) => supabase.from('shipment_lines').select('id, received, counted_by, counted_at, variance_note').in('id', it.lines.map(l => l.id)).order('id').range(a, b))
+    for (const r of lines) {
+      const l = it.lines.find(x => x.id === r.id); if (!l) continue
+      l.received = r.received; l.counted_by = r.counted_by; l.counted_at = r.counted_at; l.variance_note = r.variance_note
+    }
+    finishItem(it)
+    const tr = inp.closest('tr')
+    inp.value = it.received ?? ''
+    tr.dataset.tags = itemTags(it); tr.querySelector('td.diff').innerHTML = diffHtml(it)
+    updateProgress()
+    if (it.received !== null && sameNum(it.received, typed)) { inp.classList.add('saved'); return }   // the other PC entered the same number
+    inp.classList.add('clash')
+    const code = esc(it.stock_code || it.supplier_code)
+    const msg = `<strong>${code}</strong> was just counted on another PC as <strong>${it.received === null ? 'cleared' : fmtQty(it.received)}</strong>. Your ${typed === null ? 'cleared box' : `<strong>${fmtQty(typed)}</strong>`} was not saved. Check the box, and type again to replace it.`
+    if ($('scanResult')) scanMsg(msg, 'bad')
+    setLiveNote(`<span class="dot">●</span> ${msg}`, true)
+    tr.classList.add('live-flash'); setTimeout(() => tr.classList.remove('live-flash'), 2500)
   }
 
   // ---------- labels from Shipment Count ----------
